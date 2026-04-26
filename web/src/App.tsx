@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { WorkspaceState } from "@shared/types";
 import { useWorkspaceAgent, type WorkspaceAgentClient } from "./lib/agent-client";
+import { useTheme } from "./lib/theme";
 import { Sidebar } from "./components/Sidebar";
 import { DashboardView } from "./views/DashboardView";
 import { CreateAgentView } from "./views/CreateAgentView";
@@ -26,6 +27,7 @@ export function App() {
   const [route, setRoute] = useState<Route>({ name: "dashboard" });
   const [state, setState] = useState<WorkspaceState>(INITIAL_STATE);
   const [connected, setConnected] = useState(false);
+  const themeApi = useTheme();
 
   const agent: WorkspaceAgentClient = useWorkspaceAgent((next) => setState(next));
 
@@ -73,7 +75,13 @@ export function App() {
 
   return (
     <div className="flex h-full w-full">
-      <Sidebar route={route} navigate={navigate} state={state} />
+      <Sidebar
+        route={route}
+        navigate={navigate}
+        state={state}
+        theme={themeApi.theme}
+        onToggleTheme={themeApi.toggle}
+      />
       <main className="flex-1 overflow-y-auto">
         <div className="mx-auto max-w-7xl px-6 py-8">{view}</div>
       </main>
@@ -84,9 +92,19 @@ export function App() {
 function ConnectingScreen() {
   return (
     <div className="flex h-[60vh] items-center justify-center text-neutral-400">
-      <div className="text-center">
-        <div className="mx-auto mb-4 h-3 w-3 animate-pulse rounded-full bg-emerald-400" />
-        <div className="text-sm">Connecting to workspace…</div>
+      <div className="flex flex-col items-center gap-4 text-center">
+        <div className="relative h-12 w-12">
+          <div className="absolute inset-0 animate-ping rounded-full bg-emerald-400/30" />
+          <div className="absolute inset-2 rounded-full bg-gradient-to-br from-emerald-400 to-sky-400 shadow-glow" />
+        </div>
+        <div>
+          <div className="text-sm font-medium text-neutral-200">
+            Connecting to workspace
+          </div>
+          <div className="mt-0.5 text-xs text-neutral-500">
+            Establishing a session with the agent runtime…
+          </div>
+        </div>
       </div>
     </div>
   );

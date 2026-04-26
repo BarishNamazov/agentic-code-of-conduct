@@ -2,35 +2,283 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * Theme tokens
+ *
+ * The neutral / accent palettes are exposed as RGB channels so Tailwind
+ * utilities like `bg-neutral-900/40` continue to work via the `<alpha-value>`
+ * placeholder. Each theme overrides the same variables, so the entire UI
+ * re-skins by swapping `data-theme` on `<html>`.
+ */
+
+:root,
+:root[data-theme="dark"] {
+  /* Inverted neutral ramp: 950 = deepest bg, 50 = lightest fg */
+  --neutral-50: 244 245 248;
+  --neutral-100: 232 234 238;
+  --neutral-200: 209 212 219;
+  --neutral-300: 174 178 188;
+  --neutral-400: 132 136 147;
+  --neutral-500: 99 103 113;
+  --neutral-600: 70 73 82;
+  --neutral-700: 46 49 57;
+  --neutral-800: 32 34 41;
+  --neutral-900: 20 22 28;
+  --neutral-950: 12 13 18;
+
+  --emerald-50: 236 253 245;
+  --emerald-100: 209 250 229;
+  --emerald-200: 167 243 208;
+  --emerald-300: 110 231 183;
+  --emerald-400: 52 211 153;
+  --emerald-500: 16 185 129;
+  --emerald-600: 5 150 105;
+  --emerald-700: 4 120 87;
+  --emerald-800: 6 95 70;
+  --emerald-900: 6 78 59;
+  --emerald-950: 2 44 34;
+
+  --red-50: 254 242 242;
+  --red-100: 254 226 226;
+  --red-200: 254 202 202;
+  --red-300: 252 165 165;
+  --red-400: 248 113 113;
+  --red-500: 239 68 68;
+  --red-600: 220 38 38;
+  --red-700: 185 28 28;
+  --red-800: 153 27 27;
+  --red-900: 127 29 29;
+  --red-950: 69 10 10;
+
+  --yellow-50: 254 252 232;
+  --yellow-100: 254 249 195;
+  --yellow-200: 254 240 138;
+  --yellow-300: 253 224 71;
+  --yellow-400: 250 204 21;
+  --yellow-500: 234 179 8;
+  --yellow-600: 202 138 4;
+  --yellow-700: 161 98 7;
+  --yellow-800: 133 77 14;
+  --yellow-900: 113 63 18;
+  --yellow-950: 66 32 6;
+
+  --sky-50: 240 249 255;
+  --sky-100: 224 242 254;
+  --sky-200: 186 230 253;
+  --sky-300: 125 211 252;
+  --sky-400: 56 189 248;
+  --sky-500: 14 165 233;
+  --sky-600: 2 132 199;
+  --sky-700: 3 105 161;
+  --sky-800: 7 89 133;
+  --sky-900: 12 74 110;
+  --sky-950: 8 47 73;
+
+  --violet-50: 245 243 255;
+  --violet-100: 237 233 254;
+  --violet-200: 221 214 254;
+  --violet-300: 196 181 253;
+  --violet-400: 167 139 250;
+  --violet-500: 139 92 246;
+  --violet-600: 124 58 237;
+  --violet-700: 109 40 217;
+  --violet-800: 91 33 182;
+  --violet-900: 76 29 149;
+  --violet-950: 46 16 101;
+
+  --accent: 110 231 183;
+  --accent-soft: 16 185 129;
+  --accent-strong: 52 211 153;
+
+  --surface: 20 22 28;
+  --surface-raised: 26 28 35;
+  --surface-sunken: 12 13 18;
+
+  --shadow: 0 0 0;
+
+  --grid-line: 255 255 255;
+  --grid-alpha: 0.04;
+}
+
+:root[data-theme="light"] {
+  /* Light ramp: 950 = lightest bg, 50 = darkest fg */
+  --neutral-950: 250 250 252;
+  --neutral-900: 244 245 248;
+  --neutral-800: 230 232 238;
+  --neutral-700: 209 212 219;
+  --neutral-600: 162 166 176;
+  --neutral-500: 117 121 132;
+  --neutral-400: 86 90 100;
+  --neutral-300: 60 63 72;
+  --neutral-200: 42 44 51;
+  --neutral-100: 26 28 34;
+  --neutral-50: 14 16 22;
+
+  /* Accents stay perceptually similar but shaded for light backgrounds */
+  --emerald-950: 236 253 245;
+  --emerald-900: 209 250 229;
+  --emerald-800: 167 243 208;
+  --emerald-700: 110 231 183;
+  --emerald-600: 52 211 153;
+  --emerald-500: 16 185 129;
+  --emerald-400: 5 150 105;
+  --emerald-300: 4 120 87;
+  --emerald-200: 6 95 70;
+  --emerald-100: 6 78 59;
+  --emerald-50: 2 44 34;
+
+  --red-950: 254 242 242;
+  --red-900: 254 226 226;
+  --red-800: 254 202 202;
+  --red-700: 252 165 165;
+  --red-600: 248 113 113;
+  --red-500: 239 68 68;
+  --red-400: 220 38 38;
+  --red-300: 185 28 28;
+  --red-200: 153 27 27;
+  --red-100: 127 29 29;
+  --red-50: 69 10 10;
+
+  --yellow-950: 254 252 232;
+  --yellow-900: 254 249 195;
+  --yellow-800: 254 240 138;
+  --yellow-700: 234 179 8;
+  --yellow-600: 202 138 4;
+  --yellow-500: 161 98 7;
+  --yellow-400: 161 98 7;
+  --yellow-300: 133 77 14;
+  --yellow-200: 113 63 18;
+  --yellow-100: 90 50 12;
+  --yellow-50: 66 32 6;
+
+  --sky-950: 240 249 255;
+  --sky-900: 224 242 254;
+  --sky-800: 186 230 253;
+  --sky-700: 125 211 252;
+  --sky-600: 14 165 233;
+  --sky-500: 2 132 199;
+  --sky-400: 3 105 161;
+  --sky-300: 7 89 133;
+  --sky-200: 12 74 110;
+  --sky-100: 9 56 84;
+  --sky-50: 8 47 73;
+
+  --violet-950: 245 243 255;
+  --violet-900: 237 233 254;
+  --violet-800: 221 214 254;
+  --violet-700: 196 181 253;
+  --violet-600: 139 92 246;
+  --violet-500: 124 58 237;
+  --violet-400: 109 40 217;
+  --violet-300: 91 33 182;
+  --violet-200: 76 29 149;
+  --violet-100: 60 22 120;
+  --violet-50: 46 16 101;
+
+  --accent: 5 150 105;
+  --accent-soft: 16 185 129;
+  --accent-strong: 4 120 87;
+
+  --surface: 255 255 255;
+  --surface-raised: 255 255 255;
+  --surface-sunken: 244 245 248;
+
+  --shadow: 30 36 50;
+
+  --grid-line: 0 0 0;
+  --grid-alpha: 0.05;
+}
+
 @layer base {
   html,
   body,
   #root {
     height: 100%;
   }
+  html {
+    color-scheme: dark;
+  }
+  html[data-theme="light"] {
+    color-scheme: light;
+  }
   body {
     @apply bg-neutral-950 text-neutral-100 antialiased;
     font-family:
-      ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica,
-      Arial, sans-serif;
+      "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+      Helvetica, Arial, sans-serif;
+    font-feature-settings: "ss01", "cv11";
+  }
+  /* Subtle ambient backdrop: faint grid + spot of accent light */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    background-image:
+      radial-gradient(
+        ellipse 60% 40% at 80% -10%,
+        rgb(var(--accent) / 0.08),
+        transparent 70%
+      ),
+      radial-gradient(
+        ellipse 50% 35% at 0% 100%,
+        rgb(var(--accent) / 0.06),
+        transparent 70%
+      ),
+      linear-gradient(
+        to right,
+        rgb(var(--grid-line) / var(--grid-alpha)) 1px,
+        transparent 1px
+      ),
+      linear-gradient(
+        to bottom,
+        rgb(var(--grid-line) / var(--grid-alpha)) 1px,
+        transparent 1px
+      );
+    background-size: 100% 100%, 100% 100%, 56px 56px, 56px 56px;
+    -webkit-mask-image: radial-gradient(
+      ellipse 80% 60% at 50% 30%,
+      black,
+      transparent 90%
+    );
+    mask-image: radial-gradient(
+      ellipse 80% 60% at 50% 30%,
+      black,
+      transparent 90%
+    );
+  }
+  #root {
+    position: relative;
+    z-index: 1;
+  }
+  ::selection {
+    background: rgb(var(--accent) / 0.35);
+    color: rgb(var(--neutral-50));
   }
 }
 
 @layer components {
   .btn {
-    @apply inline-flex items-center gap-2 rounded-md border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm font-medium text-neutral-100 transition hover:border-neutral-500 hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-50;
+    @apply inline-flex items-center gap-2 rounded-md border border-neutral-800 bg-neutral-900/70 px-3 py-1.5 text-sm font-medium text-neutral-100 shadow-soft backdrop-blur-sm transition hover:-translate-y-px hover:border-neutral-700 hover:bg-neutral-800 active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0;
   }
   .btn-primary {
-    @apply border-emerald-500/40 bg-emerald-500/15 text-emerald-300 hover:border-emerald-400 hover:bg-emerald-500/25 hover:text-emerald-200;
+    @apply border-emerald-500/40 bg-gradient-to-b from-emerald-500/20 to-emerald-500/10 text-emerald-200 hover:border-emerald-400 hover:from-emerald-500/30 hover:to-emerald-500/15 hover:text-emerald-100;
   }
   .btn-danger {
     @apply border-red-500/40 bg-red-500/10 text-red-300 hover:border-red-400 hover:bg-red-500/20;
   }
+  .btn-ghost {
+    @apply border-transparent bg-transparent shadow-none hover:border-neutral-800 hover:bg-neutral-900/50;
+  }
   .card {
-    @apply rounded-lg border border-neutral-800 bg-neutral-900/60 p-4 shadow-sm;
+    @apply relative rounded-xl border border-neutral-800/80 bg-surface-raised/70 p-4 shadow-card backdrop-blur-[2px];
+  }
+  .card-hoverable {
+    @apply transition hover:-translate-y-0.5 hover:border-emerald-500/40 hover:shadow-glow;
   }
   .input {
-    @apply w-full rounded-md border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-100 placeholder-neutral-500 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500;
+    @apply w-full rounded-md border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-100 placeholder-neutral-500 transition focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500;
   }
   .badge {
     @apply inline-flex items-center rounded-full border border-neutral-700 bg-neutral-800/60 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-neutral-300;
@@ -47,21 +295,77 @@
   .badge-info {
     @apply border-sky-500/40 bg-sky-500/10 text-sky-300;
   }
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-full border border-neutral-800 bg-neutral-900/60 px-2.5 py-1 text-[11px] text-neutral-300;
+  }
   .mono {
     font-family:
       ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
       monospace;
   }
+  .focus-ring {
+    @apply focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-neutral-950;
+  }
+  .divider {
+    @apply h-px w-full bg-gradient-to-r from-transparent via-neutral-800 to-transparent;
+  }
+  .skeleton {
+    @apply animate-pulse rounded bg-neutral-800/60;
+  }
 }
 
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(120, 120, 120, 0.3);
-  border-radius: 4px;
+  background: rgb(var(--neutral-600) / 0.45);
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgb(var(--neutral-500) / 0.6);
+  background-clip: padding-box;
+  border: 2px solid transparent;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/* Tiny dots animation used by typing indicators / spinners */
+@keyframes pulse-dot {
+  0%,
+  80%,
+  100% {
+    opacity: 0.25;
+    transform: scale(0.85);
+  }
+  40% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.dot-pulse > * {
+  animation: pulse-dot 1.2s ease-in-out infinite;
+}
+.dot-pulse > *:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.dot-pulse > *:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-fade-in {
+  animation: fade-in 0.25s ease-out both;
 }

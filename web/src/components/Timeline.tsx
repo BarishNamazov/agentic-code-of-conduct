@@ -11,7 +11,7 @@ export function Timeline({
 }) {
   const idIndex = new Map(events.map((e) => [e.id, e]));
   return (
-    <ol className={density === "compact" ? "space-y-1" : "space-y-1.5"}>
+    <ol className={density === "compact" ? "space-y-0.5" : "space-y-1"}>
       {events.map((e) => (
         <TimelineRow key={e.id} event={e} idIndex={idIndex} density={density} />
       ))}
@@ -31,15 +31,23 @@ function TimelineRow({
   const [open, setOpen] = useState(false);
   const cause = e.causedByActionId ? idIndex.get(e.causedByActionId) : null;
   const summary = summarizeArgs(e.args);
+  const stripeColor = categoryColor(e.action);
   return (
     <li
-      className={`rounded-md border border-neutral-800 bg-neutral-950/60 transition ${
-        open ? "border-neutral-700" : ""
+      className={`group relative overflow-hidden rounded-md border transition ${
+        open
+          ? "border-neutral-700 bg-neutral-900/60"
+          : "border-neutral-800/70 bg-neutral-950/40 hover:border-neutral-700 hover:bg-neutral-900/40"
       }`}
     >
+      <span
+        aria-hidden
+        className="absolute inset-y-0 left-0 w-0.5"
+        style={{ background: stripeColor }}
+      />
       <button
         onClick={() => setOpen((v) => !v)}
-        className={`flex w-full items-start gap-2 px-3 text-left ${
+        className={`flex w-full items-start gap-2 pl-3 pr-3 text-left ${
           density === "compact" ? "py-1" : "py-1.5"
         }`}
       >
@@ -58,28 +66,30 @@ function TimelineRow({
         <span className="mono min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-neutral-300">
           {summary}
         </span>
-        <span className="shrink-0 text-[10px] text-neutral-600">
+        <span className="shrink-0 text-[10px] text-neutral-600 transition group-hover:text-neutral-400">
           {open ? "▾" : "▸"}
         </span>
       </button>
       {open && (
-        <div className="border-t border-neutral-800/80 p-3 text-[11px]">
-          <Field label="id" value={e.id} mono />
-          <Field label="actor" value={e.actorAgentId} mono />
-          {e.runId && <Field label="run" value={e.runId} mono />}
-          {e.behaviorVersionId && (
-            <Field label="behavior" value={e.behaviorVersionId} mono />
-          )}
-          {e.causedByReactionId && (
-            <Field label="reaction" value={e.causedByReactionId} mono />
-          )}
-          {cause && (
-            <Field
-              label="caused by"
-              value={`${cause.action} (${cause.id})`}
-              mono
-            />
-          )}
+        <div className="animate-fade-in border-t border-neutral-800/80 p-3 text-[11px]">
+          <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
+            <Field label="id" value={e.id} mono />
+            <Field label="actor" value={e.actorAgentId} mono />
+            {e.runId && <Field label="run" value={e.runId} mono />}
+            {e.behaviorVersionId && (
+              <Field label="behavior" value={e.behaviorVersionId} mono />
+            )}
+            {e.causedByReactionId && (
+              <Field label="reaction" value={e.causedByReactionId} mono />
+            )}
+            {cause && (
+              <Field
+                label="caused by"
+                value={`${cause.action} (${cause.id})`}
+                mono
+              />
+            )}
+          </div>
           <div className="mt-2">
             <div className="mb-1 text-[10px] uppercase tracking-wider text-neutral-500">
               args
@@ -104,7 +114,15 @@ function Field({
   return (
     <div className="flex gap-2 text-[11px]">
       <span className="w-20 shrink-0 text-neutral-500">{label}</span>
-      <span className={mono ? "mono text-neutral-200" : "text-neutral-200"}>{value}</span>
+      <span
+        className={
+          mono
+            ? "mono min-w-0 truncate text-neutral-200"
+            : "min-w-0 truncate text-neutral-200"
+        }
+      >
+        {value}
+      </span>
     </div>
   );
 }
@@ -119,6 +137,16 @@ function summarizeArgs(args: Record<string, unknown>): string {
     out.push(`${k}=${val}`);
   }
   return out.join("  ");
+}
+
+function categoryColor(action: string): string {
+  if (action.startsWith("Tooling.completed")) return "rgb(var(--emerald-400))";
+  if (action.startsWith("Tooling.failed") || action.endsWith(".failed"))
+    return "rgb(var(--red-400))";
+  if (action.startsWith("Spawning")) return "rgb(var(--yellow-400))";
+  if (action.startsWith("Running")) return "rgb(var(--sky-400))";
+  if (action.startsWith("Reacting")) return "rgb(var(--violet-400))";
+  return "rgb(var(--neutral-600))";
 }
 
 function eventBadgeClass(action: string): string {
