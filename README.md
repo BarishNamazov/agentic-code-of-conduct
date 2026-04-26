@@ -14,15 +14,16 @@ deploys the result as a real independent cloud agent.
 
 ### CSAIL directory agent
 
-[![CSAIL directory agent demo preview](videos/previews/csail_directory_agent.gif)](videos/csail_directory_agent.mp4)
+
+https://github.com/user-attachments/assets/0893e92c-620b-47d6-94aa-c70a4b3c1d03
 
 ### CSAIL 3D exploration
 
-[![CSAIL 3D exploration demo preview](videos/previews/csail-3d.gif)](videos/csail-3d.mp4)
+https://github.com/user-attachments/assets/5fe462bd-164c-4269-a920-63c3f783db80
 
 ### Culture agent
 
-[![Culture agent demo preview](videos/previews/culture.gif)](videos/culture.mov)
+https://github.com/user-attachments/assets/c9bfc123-208c-4f2e-ae50-3ec0fe00b0cf
 
 ## How it works
 
