@@ -27,6 +27,10 @@ export class BehaviorAgent extends Agent<Env, BehaviorAgentState> {
   };
 
   async onStart() {
+    this.ensureSchema();
+  }
+
+  private ensureSchema() {
     this.sql`CREATE TABLE IF NOT EXISTS local_behavior (
       id TEXT PRIMARY KEY,
       behavior_version_id TEXT NOT NULL,
@@ -75,6 +79,7 @@ export class BehaviorAgent extends Agent<Env, BehaviorAgentState> {
     behaviorVersionId: string;
     normalized: BCIR;
   }) {
+    this.ensureSchema();
     this.sql`
       INSERT INTO local_behavior (id, behavior_version_id, normalized_json, installed_at)
       VALUES (${crypto.randomUUID()}, ${input.behaviorVersionId},
@@ -94,6 +99,7 @@ export class BehaviorAgent extends Agent<Env, BehaviorAgentState> {
     behaviorVersionId: string;
     normalized: BCIR;
   } | null> {
+    this.ensureSchema();
     const rows = this.sql<{
       behavior_version_id: string;
       normalized_json: string;
@@ -111,6 +117,7 @@ export class BehaviorAgent extends Agent<Env, BehaviorAgentState> {
 
   // Mirror an action produced by this agent during a workspace-orchestrated run.
   async recordAction(env: ActingEnvelope) {
+    this.ensureSchema();
     this.sql`
       INSERT INTO local_actions
       (id, action_name, args_json, run_id, behavior_version_id,
@@ -124,6 +131,7 @@ export class BehaviorAgent extends Agent<Env, BehaviorAgentState> {
 
   // Inspection helper for the UI.
   async listLocalActions(limit = 100): Promise<TimelineEvent[]> {
+    this.ensureSchema();
     const rows = this.sql<{
       id: string;
       action_name: string;
@@ -152,10 +160,12 @@ export class BehaviorAgent extends Agent<Env, BehaviorAgentState> {
   }
 
   async setRunning(running: boolean) {
+    this.ensureSchema();
     this.setState({ ...this.state, status: running ? "running" : "ready" });
   }
 
   async resetStorage(): Promise<{ ok: boolean }> {
+    this.ensureSchema();
     this.sql`DELETE FROM local_handlers`;
     this.sql`DELETE FROM local_files`;
     this.sql`DELETE FROM local_actions`;
@@ -176,6 +186,7 @@ export class BehaviorAgent extends Agent<Env, BehaviorAgentState> {
     content: string;
     contentType?: string;
   }): Promise<LocalFileMeta> {
+    this.ensureSchema();
     const path = normalizePath(input.path);
     const contentType = input.contentType?.trim() || guessContentType(path);
     const now = new Date().toISOString();
@@ -215,6 +226,7 @@ export class BehaviorAgent extends Agent<Env, BehaviorAgentState> {
     size: number;
     updatedAt: string;
   } | null> {
+    this.ensureSchema();
     const p = normalizePath(path);
     const rows = this.sql<{
       path: string;
@@ -236,6 +248,7 @@ export class BehaviorAgent extends Agent<Env, BehaviorAgentState> {
   }
 
   async listFiles(): Promise<LocalFileMeta[]> {
+    this.ensureSchema();
     const rows = this.sql<{
       path: string;
       content_type: string;
@@ -254,6 +267,7 @@ export class BehaviorAgent extends Agent<Env, BehaviorAgentState> {
   }
 
   async deleteFile(path: string): Promise<{ ok: boolean }> {
+    this.ensureSchema();
     const p = normalizePath(path);
     this.sql`DELETE FROM local_files WHERE path = ${p}`;
     return { ok: true };
@@ -267,6 +281,7 @@ export class BehaviorAgent extends Agent<Env, BehaviorAgentState> {
     path: string;
     spec: HandlerSpec;
   }): Promise<LocalHandler> {
+    this.ensureSchema();
     const method = (input.method || "GET").toUpperCase();
     const path = normalizeHandlerPath(input.path);
     const now = new Date().toISOString();
@@ -300,6 +315,7 @@ export class BehaviorAgent extends Agent<Env, BehaviorAgentState> {
   }
 
   async listHandlers(): Promise<LocalHandler[]> {
+    this.ensureSchema();
     const rows = this.sql<{
       id: string;
       method: string;
@@ -320,6 +336,7 @@ export class BehaviorAgent extends Agent<Env, BehaviorAgentState> {
   }
 
   async deleteHandler(id: string): Promise<{ ok: boolean }> {
+    this.ensureSchema();
     this.sql`DELETE FROM local_handlers WHERE id = ${id}`;
     return { ok: true };
   }
@@ -330,6 +347,7 @@ export class BehaviorAgent extends Agent<Env, BehaviorAgentState> {
     method: string,
     path: string
   ): Promise<LocalHandler | null> {
+    this.ensureSchema();
     const m = method.toUpperCase();
     const candidates = this.sql<{
       id: string;
