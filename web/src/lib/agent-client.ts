@@ -41,6 +41,64 @@ export interface WorkspaceStub {
     }[]
   >;
   deleteAgent(agentId: string): Promise<void>;
+
+  // Files & handlers (UI façade over BehaviorAgent durable storage).
+  listAgentFiles(agentId: string): Promise<
+    {
+      path: string;
+      contentType: string;
+      size: number;
+      createdAt: string;
+      updatedAt: string;
+    }[]
+  >;
+  readAgentFile(
+    agentId: string,
+    path: string
+  ): Promise<{
+    path: string;
+    content: string;
+    contentType: string;
+    size: number;
+    updatedAt: string;
+  } | null>;
+  writeAgentFile(input: {
+    agentId: string;
+    path: string;
+    content: string;
+    contentType?: string;
+  }): Promise<{
+    path: string;
+    contentType: string;
+    size: number;
+    createdAt: string;
+    updatedAt: string;
+  }>;
+  deleteAgentFile(agentId: string, path: string): Promise<{ ok: boolean }>;
+  listAgentHandlers(agentId: string): Promise<
+    {
+      id: string;
+      method: string;
+      path: string;
+      spec: unknown;
+      createdAt: string;
+      updatedAt: string;
+    }[]
+  >;
+  setAgentHandler(input: {
+    agentId: string;
+    method: string;
+    path: string;
+    spec: unknown;
+  }): Promise<{
+    id: string;
+    method: string;
+    path: string;
+    spec: unknown;
+    createdAt: string;
+    updatedAt: string;
+  }>;
+  deleteAgentHandler(agentId: string, id: string): Promise<{ ok: boolean }>;
 }
 
 export type WorkspaceAgentClient = ReturnType<typeof useAgent<WorkspaceState>> & {
@@ -74,20 +132,16 @@ export function useWorkspaceAgent(
       call: (
         method: string,
         args: unknown[],
-        opts: {
-          stream: {
-            onChunk: (chunk: RunChunk) => void;
-            onDone?: (v: { type: "done"; runId: string }) => void;
-            onError?: (e: string) => void;
-          };
+        streamOptions: {
+          onChunk: (chunk: RunChunk) => void;
+          onDone?: (v: { type: "done"; runId: string }) => void;
+          onError?: (e: string) => void;
         }
-      ) => Promise<void>;
+      ) => Promise<unknown>;
     }).call("runAgent", [input], {
-      stream: {
-        onChunk: handlers.onChunk,
-        onDone: handlers.onDone,
-        onError: handlers.onError,
-      },
+      onChunk: handlers.onChunk,
+      onDone: handlers.onDone,
+      onError: handlers.onError,
     });
 
   return client;

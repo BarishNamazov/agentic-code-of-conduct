@@ -13,7 +13,13 @@ import type {
   ToolStatus,
 } from "../../shared/types";
 import { selectEntryReactions } from "../behavior/validate";
-import { TOOL_REGISTRY, type ToolHostQueries } from "./tools";
+import {
+  generatePlannerText,
+  listAvailableTools,
+  TOOL_REGISTRY,
+  type ToolHostQueries,
+  type ToolResult,
+} from "./tools";
 
 export type RunSink = {
   send(chunk: RunChunk): void;
@@ -63,6 +69,13 @@ export type RunHooks = {
     runId: string;
     sink: RunSink;
   }) => Promise<void>;
+  // Normalize a free-form child behavior text into a BCIR. Lets parent
+  // agents spawn children with rich, parser-derived reactions instead of
+  // a single hard-coded LLM call.
+  normalizeChildBehavior: (input: {
+    name: string;
+    rawText: string;
+  }) => Promise<BCIR>;
   // Update the workspace state projection + broadcast a graph chunk.
   refreshGraph: () => Promise<AgentGraph>;
 };
@@ -244,8 +257,22 @@ async function executeThenLine(
     return;
   }
 
+  if (line.action.startsWith("Building.")) {
+    await executeAgenticLoop(
+      args,
+      requestAction.id,
+      reaction,
+      ctx,
+      hooks,
+      sink,
+      envForTools,
+      binding
+    );
+    return;
+  }
+
   if (line.action.startsWith("Spawning.")) {
-    await runSpawn(args, requestAction.id, ctx, hooks, sink);
+    await runSpawn(args, requestAction.id, ctx, hooks, sink, binding);
     return;
   }
 
@@ -267,21 +294,38 @@ async function executeThenLine(
     return;
   }
 
-  // Fallback: ask the LLM to satisfy the request. Always include the original
-  // user message — the parsed arguments alone (e.g. "it into 3 bullet points")
-  // are missing the antecedent, so without `binding.input` the model has no
-  // context to answer with.
+  // Fallback: ask the LLM to satisfy the request. We deliberately surface
+  // both the original user message and the resolved arguments — the args
+  // alone (e.g. "object: ?input" pre-resolution, or "object: it") lack
+  // antecedent. After `resolveArgs` ?input has already been replaced with
+  // `binding.input`, so `args.object` should now be the real document.
   const userInput = typeof binding.input === "string" ? binding.input : "";
+  const lastChild =
+    typeof binding.lastChildOutput === "string" ? binding.lastChildOutput : "";
+  const lastTool =
+    typeof binding.lastToolOutput === "string" ? binding.lastToolOutput : "";
+
+  const explicitPrompt =
+    typeof args.prompt === "string" ? args.prompt : null;
+
+  const verbPart = line.action.replace(/^[A-Z][A-Za-z]+\./, "");
+  const conceptPart = line.action.split(".")[0] ?? "";
+
   const prompt =
-    typeof args.prompt === "string"
-      ? composeWithUserInput(args.prompt, userInput)
+    explicitPrompt !== null
+      ? composeWithUserInput(explicitPrompt, userInput)
       : [
-          userInput ? `User message:\n${userInput}\n` : "",
-          `The agent's behavior fired the reaction "${reaction.prose.trim()}".`,
-          `It now needs to satisfy the request \`${line.action}\` with arguments ${JSON.stringify(
-            args
-          )}.`,
-          `Respond directly to the user, addressing the user message above according to the reaction's intent.`,
+          userInput ? `User message / input:\n${userInput}\n` : "",
+          lastChild ? `Previous sub-agent output:\n${lastChild}\n` : "",
+          lastTool && lastTool !== userInput
+            ? `Previous tool output:\n${lastTool}\n`
+            : "",
+          `You are an agent fulfilling the reaction: "${reaction.prose.trim()}".`,
+          `The reaction asks you to ${verbPart} (${conceptPart}). ` +
+            (Object.keys(args).length > 0
+              ? `Inputs: ${JSON.stringify(args)}.`
+              : ""),
+          `Perform that step now and respond directly to the user with the result. Do not narrate that you are an LLM — just produce the requested output.`,
         ]
           .filter(Boolean)
           .join("\n");
@@ -319,7 +363,7 @@ async function runTool(
   sink: RunSink,
   envForTools: { AI?: { run: (m: string, i: unknown, o?: unknown) => Promise<unknown> } },
   binding: Record<string, unknown>
-): Promise<void> {
+): Promise<ToolResult> {
   const tool = TOOL_REGISTRY[toolName];
   const toolCallId = `tc_${crypto.randomUUID().slice(0, 8)}`;
   hooks.insertToolCall({
@@ -371,7 +415,7 @@ async function runTool(
       },
       sink
     );
-    return;
+    return { error: err };
   }
 
   try {
@@ -382,6 +426,9 @@ async function runTool(
         },
       },
       host: hooks.toolHost,
+      actorAgentId: ctx.agentId,
+      runId: ctx.runId,
+      causedByActionId: requestActionId,
     });
     if (result.error) {
       hooks.updateToolCall({
@@ -408,7 +455,7 @@ async function runTool(
         },
         sink
       );
-      return;
+      return result;
     }
 
     hooks.updateToolCall({
@@ -443,6 +490,7 @@ async function runTool(
       },
       sink
     );
+    return result;
   } catch (e) {
     const err = e instanceof Error ? e.message : String(e);
     hooks.updateToolCall({
@@ -469,6 +517,7 @@ async function runTool(
       },
       sink
     );
+    return { error: err };
   }
 }
 
@@ -482,52 +531,72 @@ async function runSpawn(
     runId: string;
   },
   hooks: RunHooks,
-  sink: RunSink
+  sink: RunSink,
+  binding: Record<string, unknown>
 ): Promise<void> {
   const childName = String(args.name ?? args.role ?? "Helper");
-  const childPurpose = String(args.purpose ?? args.task ?? args.object ?? "");
-  // Derive a minimal child BCIR.
-  const childBCIR: BCIR = {
-    schemaVersion: "bcir.v0",
-    agent: { name: childName, purpose: childPurpose || undefined },
-    raw: {
-      format: "behavioral-dsl",
-      text: `Agent: ${childName}\nPurpose: ${childPurpose}\nWhen the user asks, generate a helpful answer.`,
-    },
-    concepts: [],
-    reactions: [
-      {
-        id: "r_child_1",
-        name: "R1",
-        prose:
-          "When the user asks, generate a helpful answer using the LLM.",
-        formal:
-          "when UserInput.received do request Tooling.called(tool: 'llm.generate', prompt: ?input)",
-        when: [
-          {
-            bind: "?input",
-            action: "UserInput.received",
-            args: { input: "?input" },
-          },
-        ],
-        where: [],
-        then: [
-          {
-            posture: "request",
-            action: "Tooling.called",
-            args: { tool: "llm.generate", prompt: "?input" },
-          },
-        ],
+  // Accept a few shapes: explicit purpose, task, behavior text, or fall back
+  // to args.object (which may itself be the resolved user input).
+  const childPurpose = String(
+    args.purpose ?? args.task ?? args.behavior ?? args.object ?? ""
+  );
+  const childBehaviorText = String(
+    args.behavior ?? args.behaviorText ?? args.purpose ?? args.task ?? ""
+  );
+
+  // Build a child BCIR. If the parent provided a `behavior` arg, normalize it
+  // through the parser so the child can have its own reactions (and even
+  // spawn further). Otherwise fall back to a single LLM-backed reaction.
+  let childBCIR: BCIR;
+  if (childBehaviorText && childBehaviorText.length > 16) {
+    childBCIR = await hooks.normalizeChildBehavior({
+      name: childName,
+      rawText: `Agent: ${childName}\nPurpose: ${childPurpose}\n${childBehaviorText}`,
+    });
+  } else {
+    const purposeLine = childPurpose
+      ? `Purpose: ${childPurpose}`
+      : `Purpose: act on the user's request.`;
+    childBCIR = {
+      schemaVersion: "bcir.v0",
+      agent: { name: childName, purpose: childPurpose || undefined },
+      raw: {
+        format: "behavioral-dsl",
+        text: `Agent: ${childName}\n${purposeLine}\nWhen the user gives input, think and use tools as needed to fulfill the request.`,
       },
-    ],
-    tools: [
-      {
-        name: "llm.generate",
-        description: "LLM generation",
-      },
-    ],
-    permissions: [{ capability: "tools", scope: "self" }],
-  };
+      concepts: [],
+      reactions: [
+        {
+          id: "r_child_1",
+          name: "R1",
+          prose:
+            "When the user gives input, think and use tools as needed to fulfill the request.",
+          formal:
+            "when UserInput.received do request Building.act(goal: ?input)",
+          when: [
+            {
+              bind: "?input",
+              action: "UserInput.received",
+              args: { input: "?input" },
+            },
+          ],
+          where: [],
+          then: [
+            {
+              posture: "request",
+              action: "Building.act",
+              args: { goal: "?input" },
+            },
+          ],
+        },
+      ],
+      tools: listAvailableTools(),
+      permissions: [
+        { capability: "tools", scope: "self" },
+        { capability: "spawn", scope: "self" },
+      ],
+    };
+  }
 
   const { childAgentId } = await hooks.spawnChild({
     parentAgentId: ctx.agentId,
@@ -557,14 +626,69 @@ async function runSpawn(
     sink
   );
 
-  // Optionally execute the child immediately so the user sees output.
-  const taskInput = childPurpose || `Help with: ${ctx.runId}`;
+  // Run the child immediately so the parent can observe its output. We
+  // intercept the child's stream so we can (a) forward chunks to the user
+  // and (b) capture the final textual output and bind it to the parent's
+  // `lastChildOutput` for subsequent reaction steps.
+  // Build the child's task input. The parent's `?input` (the original user
+  // message or upstream payload) is the actual data the child must work on.
+  // The purpose, if any, is the *instruction* the parent attached. We pass
+  // both so the child has content to act on, not just an instruction.
+  const parentInput = typeof binding.input === "string" ? binding.input : "";
+  const explicitInput =
+    typeof args.input === "string"
+      ? args.input
+      : typeof args.task === "string"
+        ? args.task
+        : "";
+  const taskInput = (() => {
+    if (childPurpose && (explicitInput || parentInput)) {
+      return `${childPurpose}\n\n--- Input ---\n${explicitInput || parentInput}`;
+    }
+    return explicitInput || parentInput || childPurpose || `Help with ${ctx.runId}`;
+  })();
+
+  let captured = "";
+  const childSink: RunSink = {
+    send(chunk) {
+      if (chunk.type === "token" && typeof chunk.text === "string") {
+        captured += chunk.text;
+      } else if (chunk.type === "tool_result" && chunk.status === "completed") {
+        const out = chunk.output;
+        if (typeof out === "string" && out.length > captured.length) {
+          captured = out;
+        }
+      }
+      sink.send(chunk);
+    },
+  };
+
   await hooks.runChild({
     childAgentId,
     userInput: taskInput,
     runId: ctx.runId,
-    sink,
+    sink: childSink,
   });
+
+  binding.lastChildOutput = captured;
+  binding[childName] = captured;
+
+  await record(
+    hooks,
+    {
+      by: ctx.agentId,
+      action: "Spawning.completed",
+      args: {
+        child: childAgentId,
+        name: childName,
+        summary: summarize(captured),
+      },
+      behaviorVersionId: ctx.behaviorVersionId,
+      runId: ctx.runId,
+      causedByActionId: requestActionId,
+    },
+    sink
+  );
 }
 
 async function record(
@@ -628,4 +752,276 @@ function summarize(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+// =============================================================================
+// Agentic loop. Triggered by `Building.act`. Drives a JSON tool-calling loop
+// using the LLM. The loop sees the agent's behavior, the user input, and a
+// catalog of tools; it can call tools (including agent.spawn / agent.search /
+// agent.updateBehavior / agent.writeFile / agent.setHandler / etc.) and finally
+// emit a `respond` decision which is streamed to the user as a token chunk.
+// =============================================================================
+
+const AGENTIC_TOOLS = [
+  "llm.generate",
+  "memory.search",
+  "http.fetch",
+  "agent.list",
+  "agent.search",
+  "agent.getBehavior",
+  "agent.spawn",
+  "agent.updateBehavior",
+  "agent.writeFile",
+  "agent.readFile",
+  "agent.listFiles",
+  "agent.deleteFile",
+  "agent.setHandler",
+  "agent.listHandlers",
+];
+
+function buildToolCatalog(): string {
+  return AGENTIC_TOOLS.map((name) => {
+    const def = TOOL_REGISTRY[name];
+    if (!def) return null;
+    return `- ${def.name}: ${def.description}${
+      def.usage ? `\n  ${def.usage.replace(/\n/g, "\n  ")}` : ""
+    }`;
+  })
+    .filter(Boolean)
+    .join("\n");
+}
+
+function buildAgenticSystemPrompt(
+  bcir: BCIR,
+  userInput: string,
+  goal: string,
+  history: { tool?: string; input?: unknown; output?: unknown; error?: string; thought?: string }[]
+): string {
+  const agent = bcir.agent;
+  const reactions = (bcir.reactions ?? [])
+    .map((r) => `  • ${r.prose || r.name}`)
+    .join("\n");
+  const tools = buildToolCatalog();
+  const historyText = history.length
+    ? history
+        .map((h, i) => {
+          if (h.thought && !h.tool) return `Step ${i + 1} thought: ${h.thought}`;
+          const inp = JSON.stringify(h.input ?? null);
+          const out =
+            h.error != null
+              ? `ERROR: ${h.error}`
+              : truncateForPrompt(JSON.stringify(h.output ?? null), 1200);
+          return `Step ${i + 1}: ${h.thought ? `(${h.thought}) ` : ""}called ${h.tool} with ${truncateForPrompt(inp, 400)} → ${out}`;
+        })
+        .join("\n")
+    : "(no steps yet)";
+
+  return [
+    `You are an agent named "${agent?.name ?? "Agent"}".`,
+    agent?.purpose ? `Your purpose: ${agent.purpose}` : "",
+    reactions ? `Your behavioral reactions:\n${reactions}` : "",
+    `\nAvailable tools you can call:\n${tools}`,
+    `\nThe user input for this run:\n${truncateForPrompt(userInput, 4000)}`,
+    goal && goal !== userInput ? `\nGoal for this step: ${truncateForPrompt(goal, 1000)}` : "",
+    `\nWork history so far:\n${historyText}`,
+    `\nDecide the next step. You MUST reply with a single JSON object — nothing else, no markdown fences.`,
+    `Either:`,
+    `  {"thought": "<short reasoning>", "tool": "<tool.name>", "input": { ... }}  — to call a tool`,
+    `or:`,
+    `  {"thought": "<short reasoning>", "respond": "<final answer for the user>"}  — when you are done.`,
+    `Rules:`,
+    `- Use agent.search / agent.list to discover existing agents you can delegate to via agent.spawn(fromAgentId).`,
+    `- Use agent.spawn to delegate sub-tasks; pass userInput so the child has data to work on.`,
+    `- Use agent.writeFile to save artifacts (HTML, code, JSON, …) the user will need.`,
+    `- Use agent.setHandler to expose this agent at an HTTP path when the request asks for a website / endpoint / served content.`,
+    `- Use agent.updateBehavior to permanently encode improved patterns once you have learned them.`,
+    `- When you are confident the request is satisfied, use "respond" and put the user-facing answer in it. Keep responses concise unless the user asked for detail.`,
+    `- If a tool errored, do NOT call it again with the same arguments. Adjust or pick another approach.`,
+    `Respond with ONLY the JSON object.`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function truncateForPrompt(s: string | undefined | null, max: number): string {
+  if (!s) return "";
+  return s.length > max ? s.slice(0, max) + "…" : s;
+}
+
+function parsePlannerResponse(
+  raw: string
+): { thought?: string; tool?: string; input?: Record<string, unknown>; respond?: string } | null {
+  if (!raw) return null;
+  let text = raw.trim();
+  // Strip code fences if the model added them despite instructions.
+  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fence) text = fence[1].trim();
+  // Locate the first {...} block.
+  const start = text.indexOf("{");
+  if (start < 0) return null;
+  let depth = 0;
+  let end = -1;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (c === "{") depth++;
+    else if (c === "}") {
+      depth--;
+      if (depth === 0) {
+        end = i;
+        break;
+      }
+    }
+  }
+  if (end < 0) return null;
+  const slice = text.slice(start, end + 1);
+  try {
+    const obj = JSON.parse(slice) as Record<string, unknown>;
+    return {
+      thought: typeof obj.thought === "string" ? obj.thought : undefined,
+      tool: typeof obj.tool === "string" ? obj.tool : undefined,
+      input:
+        obj.input && typeof obj.input === "object"
+          ? (obj.input as Record<string, unknown>)
+          : undefined,
+      respond: typeof obj.respond === "string" ? obj.respond : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function executeAgenticLoop(
+  args: Record<string, unknown>,
+  requestActionId: string,
+  reaction: ReactionIR,
+  ctx: {
+    agentId: string;
+    bcir: BCIR;
+    behaviorVersionId: string;
+    runId: string;
+  },
+  hooks: RunHooks,
+  sink: RunSink,
+  envForTools: { AI?: { run: (m: string, i: unknown, o?: unknown) => Promise<unknown> } },
+  binding: Record<string, unknown>
+): Promise<void> {
+  const userInput = typeof binding.input === "string" ? binding.input : "";
+  const goal =
+    typeof args.goal === "string"
+      ? args.goal
+      : typeof args.task === "string"
+        ? args.task
+        : userInput;
+
+  const MAX_STEPS = 8;
+  const history: {
+    tool?: string;
+    input?: unknown;
+    output?: unknown;
+    error?: string;
+    thought?: string;
+  }[] = [];
+
+  let lastCausedBy = requestActionId;
+  let finalRespond: string | null = null;
+
+  for (let step = 0; step < MAX_STEPS; step++) {
+    const prompt = buildAgenticSystemPrompt(ctx.bcir, userInput, goal, history);
+    const { text, error } = await generatePlannerText(envForTools, prompt);
+    if (error) {
+      history.push({ thought: `planner error: ${error}` });
+      finalRespond = `I hit an LLM error while planning: ${error}`;
+      break;
+    }
+    const decision = parsePlannerResponse(text);
+    if (!decision) {
+      // Treat the raw text as a final answer if it's non-trivial.
+      const trimmed = text.trim();
+      if (trimmed.length > 0) {
+        finalRespond = trimmed;
+      } else {
+        finalRespond = "I couldn't produce a structured plan.";
+      }
+      break;
+    }
+    if (decision.respond) {
+      finalRespond = decision.respond;
+      break;
+    }
+    if (!decision.tool) {
+      history.push({
+        thought: decision.thought,
+        error: "planner returned neither tool nor respond",
+      });
+      continue;
+    }
+    if (!TOOL_REGISTRY[decision.tool]) {
+      history.push({
+        thought: decision.thought,
+        tool: decision.tool,
+        input: decision.input,
+        error: `Unknown tool "${decision.tool}".`,
+      });
+      continue;
+    }
+    // Record the planner's decision as a Building.thought action for traceability.
+    const thoughtAction = await record(
+      hooks,
+      {
+        by: ctx.agentId,
+        action: "Building.thought",
+        args: {
+          thought: decision.thought ?? "",
+          tool: decision.tool,
+          input: decision.input ?? {},
+        },
+        behaviorVersionId: ctx.behaviorVersionId,
+        runId: ctx.runId,
+        causedByActionId: lastCausedBy,
+        causedByReactionId: reaction.id,
+      },
+      sink
+    );
+    const result = await runTool(
+      decision.tool,
+      decision.input ?? {},
+      thoughtAction.id,
+      ctx,
+      hooks,
+      sink,
+      envForTools,
+      binding
+    );
+    lastCausedBy = thoughtAction.id;
+    history.push({
+      thought: decision.thought,
+      tool: decision.tool,
+      input: decision.input,
+      output: result.output,
+      error: result.error,
+    });
+  }
+
+  if (finalRespond == null) {
+    finalRespond =
+      "I ran out of agentic steps without producing a complete answer.";
+  }
+
+  // Stream the final response as a normal token (no toolCallId) so the chat
+  // UI accumulates it into the turn text.
+  sink.send({ type: "token", text: finalRespond });
+  await record(
+    hooks,
+    {
+      by: ctx.agentId,
+      action: "Communicating.sent",
+      args: { object: summarize(finalRespond) },
+      behaviorVersionId: ctx.behaviorVersionId,
+      runId: ctx.runId,
+      causedByActionId: lastCausedBy,
+      causedByReactionId: reaction.id,
+    },
+    sink
+  );
+  binding.lastBuildOutput = finalRespond;
 }

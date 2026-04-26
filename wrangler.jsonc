@@ -3,7 +3,7 @@
   "name": "behaving-agents",
   "main": "src/worker/index.ts",
   "compatibility_date": "2026-04-25",
-  "compatibility_flags": ["nodejs_compat", "experimental"],
+  "compatibility_flags": ["nodejs_compat"],
   "ai": {
     "binding": "AI"
   },

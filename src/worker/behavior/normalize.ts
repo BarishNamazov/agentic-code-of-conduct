@@ -17,7 +17,9 @@ import type {
   ConceptIR,
   ReactionIR,
   ThenActionIR,
+  ToolSpecIR,
 } from "../../shared/types";
+import { listAvailableTools } from "../runtime/tools";
 
 function uid(prefix = "id"): string {
   return `${prefix}_${crypto.randomUUID().slice(0, 8)}`;
@@ -43,7 +45,7 @@ function tryParseBCIR(text: string): BCIR | null {
   try {
     const parsed = JSON.parse(text);
     if (parsed && parsed.schemaVersion === "bcir.v0" && parsed.agent?.name) {
-      return parsed as BCIR;
+      return withDefaultCapabilities(parsed as BCIR);
     }
   } catch {
     /* not JSON */
@@ -62,6 +64,7 @@ const KNOWN_KERNEL_CONCEPTS = new Set([
   "Running",
   "Requesting",
   "Creating",
+  "Building",
   "UserInput",
 ]);
 
@@ -148,6 +151,13 @@ const VERB_RE = new RegExp(
   "gi"
 );
 
+// Pronouns and meta-references that point back at the triggering input
+// rather than to a literal value. When a behavior says
+// `When the user submits a paper draft, read it.` the "it" must resolve
+// to the actual draft, not to the literal string "it".
+const INPUT_PRONOUN_RE =
+  /^(it|this|that|them|those|these|the (?:input|message|document|draft|text|content|prompt|request|paper|file|submission)|user (?:input|message))(\s+.*)?$/i;
+
 function actionFromVerb(verb: string, rest: string): {
   posture: "request" | "attest";
   action: string;
@@ -164,12 +174,28 @@ function actionFromVerb(verb: string, rest: string): {
       ? "request"
       : "request";
   // Try to extract an object/argument string
-  const arg = rest
+  let arg = rest
     .replace(/^[\s,:;-]+/, "")
     .replace(/^(the|a|an|some)\s+/i, "")
     .trim();
+
+  // If the object is a pronoun referring back to the user's input,
+  // bind to ?input so the run loop substitutes the real value.
+  let argRef: string | null = null;
+  if (arg && INPUT_PRONOUN_RE.test(arg)) {
+    argRef = "?input";
+    arg = "";
+  }
+
   const action = `${concept}.${normalisedAction(v)}`;
-  const args: Record<string, string> = arg ? { object: arg } : {};
+  const args: Record<string, string> = {};
+  if (argRef) {
+    args.object = argRef;
+  } else if (arg) {
+    args.object = arg;
+  } else {
+    args.object = "?input";
+  }
   return { posture, action, args };
 }
 
@@ -269,13 +295,15 @@ function parseDSLOrMarkdown(text: string): {
   }
 
   if (reactions.length === 0) {
-    // Whole behavior is just prose: create one catch-all reaction.
+    // Whole behavior is just prose: create one catch-all reaction that
+    // delegates to the agentic loop. Building.act lets the runtime use the
+    // LLM, multiple tools, sub-agents, and self-modification to fulfil the
+    // request rather than emitting a single naive llm.generate call.
     reactions.push({
       id: uid("r"),
       name: "R1",
       prose: text.trim().slice(0, 500),
-      formal:
-        "when UserInput.received do Tooling.called(tool: 'llm.generate', prompt: ?input)",
+      formal: "when UserInput.received do Building.act(goal: ?input)",
       when: [
         {
           bind: "?input",
@@ -287,15 +315,16 @@ function parseDSLOrMarkdown(text: string): {
       then: [
         {
           posture: "request",
-          action: "Tooling.called",
-          args: { tool: "llm.generate", prompt: "?input" },
+          action: "Building.act",
+          args: { goal: "?input" },
         },
       ],
     });
+    ensureConcept("Building");
     warnings.push({
-      level: "warn",
+      level: "info",
       message:
-        "No structured reactions detected. Defaulted to a single LLM-backed reaction.",
+        "No structured reactions detected. Defaulted to the agentic loop (Building.act).",
     });
   }
 
@@ -421,7 +450,7 @@ export async function normalizeBehavior(
   const purpose = extractPurpose(text);
 
   const tools = collectTools(reactions);
-  const draft: BCIR = {
+  const draft = withDefaultCapabilities({
     schemaVersion: "bcir.v0",
     agent: { name, purpose },
     raw: { format, text },
@@ -429,7 +458,7 @@ export async function normalizeBehavior(
     reactions,
     tools,
     permissions: collectPermissions(reactions),
-  };
+  });
 
   // 3. Optional LLM polish
   const { bcir, warnings: polishWarnings } = await polishWithLLM(env, draft);
@@ -443,13 +472,16 @@ export async function normalizeBehavior(
   }
 
   return {
-    bcir,
+    bcir: withDefaultCapabilities(bcir),
     warnings: [...warnings, ...polishWarnings],
   };
 }
 
-function collectTools(reactions: ReactionIR[]) {
-  const tools = new Map<string, { name: string; description: string }>();
+function collectTools(reactions: ReactionIR[]): ToolSpecIR[] {
+  const tools = new Map<string, ToolSpecIR>();
+  for (const tool of listAvailableTools()) {
+    tools.set(tool.name, tool);
+  }
   for (const r of reactions) {
     for (const t of r.then) {
       if (t.action === "Tooling.called") {
@@ -463,18 +495,11 @@ function collectTools(reactions: ReactionIR[]) {
       }
     }
   }
-  // Always allow LLM by default.
-  if (!tools.has("llm.generate")) {
-    tools.set("llm.generate", {
-      name: "llm.generate",
-      description: "Free-form text generation via the configured AI binding.",
-    });
-  }
   return Array.from(tools.values());
 }
 
 function collectPermissions(reactions: ReactionIR[]) {
-  const perms = new Set<string>();
+  const perms = new Set<string>(["tools"]);
   for (const r of reactions) {
     for (const t of r.then) {
       if (t.action.startsWith("Spawning.")) perms.add("spawn");
@@ -483,6 +508,28 @@ function collectPermissions(reactions: ReactionIR[]) {
     }
   }
   return Array.from(perms).map((capability) => ({ capability, scope: "self" }));
+}
+
+function withDefaultCapabilities(bcir: BCIR): BCIR {
+  const tools = new Map<string, ToolSpecIR>();
+  for (const tool of listAvailableTools()) {
+    tools.set(tool.name, tool);
+  }
+  for (const tool of bcir.tools ?? []) {
+    tools.set(tool.name, tool);
+  }
+
+  const permissions = new Map<string, { capability: string; scope: string }>();
+  for (const permission of bcir.permissions ?? []) {
+    permissions.set(`${permission.capability}:${permission.scope}`, permission);
+  }
+  permissions.set("tools:self", { capability: "tools", scope: "self" });
+
+  return {
+    ...bcir,
+    tools: Array.from(tools.values()),
+    permissions: Array.from(permissions.values()),
+  };
 }
 
 // Cloudflare Workers AI binding type alias (loose).

@@ -5,8 +5,12 @@ import type { Route } from "../App";
 import { BCIRView } from "../components/BehaviorPreview";
 import { ChatPanel } from "../components/ChatPanel";
 import { ReviseDialog } from "../components/ReviseDialog";
+import {
+  FilesPanel,
+  HandlersPanel,
+} from "../components/AgentExtensionsPanel";
 
-type SideTab = "behavior" | "versions" | "children" | "runs";
+type SideTab = "behavior" | "versions" | "children" | "runs" | "files" | "handlers";
 
 export function AgentDetailView({
   agentId,
@@ -133,7 +137,7 @@ export function AgentDetailView({
 
         {railOpen && (
           <aside className="space-y-3">
-            <div className="flex items-center gap-1 rounded-lg border border-neutral-800 bg-neutral-900/40 p-1">
+            <div className="grid grid-cols-3 gap-1 rounded-lg border border-neutral-800 bg-neutral-900/40 p-1">
               <TabButton
                 active={tab === "behavior"}
                 onClick={() => setTab("behavior")}
@@ -163,6 +167,15 @@ export function AgentDetailView({
                 <span className="ml-1 text-[10px] text-neutral-500">
                   {detail.recentRuns.length}
                 </span>
+              </TabButton>
+              <TabButton active={tab === "files"} onClick={() => setTab("files")}>
+                Files
+              </TabButton>
+              <TabButton
+                active={tab === "handlers"}
+                onClick={() => setTab("handlers")}
+              >
+                Handlers
               </TabButton>
             </div>
 
@@ -269,6 +282,14 @@ export function AgentDetailView({
                   )}
                 </div>
               )}
+
+              {tab === "files" && (
+                <FilesPanel agentId={agentId} agent={agent} />
+              )}
+
+              {tab === "handlers" && (
+                <HandlersPanel agentId={agentId} agent={agent} />
+              )}
             </div>
           </aside>
         )}
@@ -298,7 +319,7 @@ function TabButton({
   return (
     <button
       onClick={onClick}
-      className={`flex-1 rounded-md px-2 py-1.5 text-xs font-semibold transition ${
+      className={`min-w-0 rounded-md px-2 py-1.5 text-xs font-semibold transition ${
         active
           ? "bg-emerald-500/15 text-emerald-300"
           : "text-neutral-400 hover:bg-neutral-900 hover:text-neutral-200"

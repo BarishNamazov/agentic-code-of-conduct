@@ -43,6 +43,29 @@ export class BehaviorAgent extends Agent<Env, BehaviorAgentState> {
       caused_by_reaction_id TEXT,
       created_at TEXT NOT NULL
     )`;
+    // Files: durable per-agent file system. Used both for "artifacts" the
+    // agent produces during a run and for static frontend assets it serves
+    // at /api/agents/<id>/web/*. Path is the canonical key (no leading "/").
+    this.sql`CREATE TABLE IF NOT EXISTS local_files (
+      path TEXT PRIMARY KEY,
+      content_text TEXT,
+      content_type TEXT NOT NULL,
+      size INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`;
+    // Request handlers: declarative specs that map (method, path) to a
+    // response. Specs are JSON, executed by `invokeHandler` — no eval.
+    this.sql`CREATE TABLE IF NOT EXISTS local_handlers (
+      id TEXT PRIMARY KEY,
+      method TEXT NOT NULL,
+      path TEXT NOT NULL,
+      spec_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`;
+    this.sql`CREATE INDEX IF NOT EXISTS idx_local_handlers_method_path
+      ON local_handlers(method, path)`;
   }
 
   // Install (or replace) the behavior this agent runs.
@@ -131,6 +154,277 @@ export class BehaviorAgent extends Agent<Env, BehaviorAgentState> {
   async setRunning(running: boolean) {
     this.setState({ ...this.state, status: running ? "running" : "ready" });
   }
+
+  // ---------- Files ----------
+
+  async writeFile(input: {
+    path: string;
+    content: string;
+    contentType?: string;
+  }): Promise<LocalFileMeta> {
+    const path = normalizePath(input.path);
+    const contentType = input.contentType?.trim() || guessContentType(path);
+    const now = new Date().toISOString();
+    const size = byteLength(input.content);
+    const existing = this.sql<{
+      created_at: string;
+    }>`SELECT created_at FROM local_files WHERE path = ${path}`[0];
+    if (existing) {
+      this.sql`
+        UPDATE local_files
+        SET content_text = ${input.content},
+            content_type = ${contentType},
+            size = ${size},
+            updated_at = ${now}
+        WHERE path = ${path}
+      `;
+    } else {
+      this.sql`
+        INSERT INTO local_files
+          (path, content_text, content_type, size, created_at, updated_at)
+        VALUES (${path}, ${input.content}, ${contentType}, ${size}, ${now}, ${now})
+      `;
+    }
+    return {
+      path,
+      contentType,
+      size,
+      createdAt: existing?.created_at ?? now,
+      updatedAt: now,
+    };
+  }
+
+  async readFile(path: string): Promise<{
+    path: string;
+    content: string;
+    contentType: string;
+    size: number;
+    updatedAt: string;
+  } | null> {
+    const p = normalizePath(path);
+    const rows = this.sql<{
+      path: string;
+      content_text: string | null;
+      content_type: string;
+      size: number;
+      updated_at: string;
+    }>`SELECT path, content_text, content_type, size, updated_at
+       FROM local_files WHERE path = ${p}`;
+    const row = rows[0];
+    if (!row) return null;
+    return {
+      path: row.path,
+      content: row.content_text ?? "",
+      contentType: row.content_type,
+      size: row.size,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  async listFiles(): Promise<LocalFileMeta[]> {
+    const rows = this.sql<{
+      path: string;
+      content_type: string;
+      size: number;
+      created_at: string;
+      updated_at: string;
+    }>`SELECT path, content_type, size, created_at, updated_at
+       FROM local_files ORDER BY path ASC`;
+    return rows.map((r) => ({
+      path: r.path,
+      contentType: r.content_type,
+      size: r.size,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+    }));
+  }
+
+  async deleteFile(path: string): Promise<{ ok: boolean }> {
+    const p = normalizePath(path);
+    this.sql`DELETE FROM local_files WHERE path = ${p}`;
+    return { ok: true };
+  }
+
+  // ---------- Handlers ----------
+
+  async setHandler(input: {
+    id?: string;
+    method: string;
+    path: string;
+    spec: HandlerSpec;
+  }): Promise<LocalHandler> {
+    const method = (input.method || "GET").toUpperCase();
+    const path = normalizeHandlerPath(input.path);
+    const now = new Date().toISOString();
+    const id =
+      input.id ?? `h_${method}_${path.replace(/[^A-Za-z0-9]+/g, "_")}`;
+    const specJson = JSON.stringify(input.spec);
+    const existing = this.sql<{
+      created_at: string;
+    }>`SELECT created_at FROM local_handlers WHERE id = ${id}`[0];
+    if (existing) {
+      this.sql`
+        UPDATE local_handlers
+        SET method = ${method}, path = ${path}, spec_json = ${specJson},
+            updated_at = ${now}
+        WHERE id = ${id}
+      `;
+    } else {
+      this.sql`
+        INSERT INTO local_handlers (id, method, path, spec_json, created_at, updated_at)
+        VALUES (${id}, ${method}, ${path}, ${specJson}, ${now}, ${now})
+      `;
+    }
+    return {
+      id,
+      method,
+      path,
+      spec: input.spec,
+      createdAt: existing?.created_at ?? now,
+      updatedAt: now,
+    };
+  }
+
+  async listHandlers(): Promise<LocalHandler[]> {
+    const rows = this.sql<{
+      id: string;
+      method: string;
+      path: string;
+      spec_json: string;
+      created_at: string;
+      updated_at: string;
+    }>`SELECT id, method, path, spec_json, created_at, updated_at
+       FROM local_handlers ORDER BY path ASC, method ASC`;
+    return rows.map((r) => ({
+      id: r.id,
+      method: r.method,
+      path: r.path,
+      spec: safeJSON(r.spec_json) as unknown as HandlerSpec,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+    }));
+  }
+
+  async deleteHandler(id: string): Promise<{ ok: boolean }> {
+    this.sql`DELETE FROM local_handlers WHERE id = ${id}`;
+    return { ok: true };
+  }
+
+  // Find a matching handler for (method, path). Path matching is exact or
+  // prefix (handler.path ends with "/*"). Returns the most specific match.
+  async findHandler(
+    method: string,
+    path: string
+  ): Promise<LocalHandler | null> {
+    const m = method.toUpperCase();
+    const candidates = this.sql<{
+      id: string;
+      method: string;
+      path: string;
+      spec_json: string;
+      created_at: string;
+      updated_at: string;
+    }>`SELECT id, method, path, spec_json, created_at, updated_at
+       FROM local_handlers
+       WHERE method = ${m} OR method = '*'`;
+    let best: LocalHandler | null = null;
+    let bestScore = -1;
+    for (const r of candidates) {
+      const score = matchHandlerPath(r.path, path);
+      if (score > bestScore) {
+        bestScore = score;
+        best = {
+          id: r.id,
+          method: r.method,
+          path: r.path,
+          spec: safeJSON(r.spec_json) as unknown as HandlerSpec,
+          createdAt: r.created_at,
+          updatedAt: r.updated_at,
+        };
+      }
+    }
+    return best;
+  }
+}
+
+// ---------- Types & helpers ----------
+
+export type LocalFileMeta = {
+  path: string;
+  contentType: string;
+  size: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type LocalHandler = {
+  id: string;
+  method: string;
+  path: string;
+  spec: HandlerSpec;
+  createdAt: string;
+  updatedAt: string;
+};
+
+// Declarative handler spec — interpreted, not eval'd. New variants can be
+// added without breaking stored handlers.
+export type HandlerSpec =
+  | { kind: "text"; body: string; contentType?: string; status?: number }
+  | { kind: "json"; body: unknown; status?: number }
+  | { kind: "file"; path: string; status?: number }
+  | { kind: "redirect"; location: string; status?: number }
+  | {
+      kind: "llm";
+      prompt: string;
+      contentType?: string;
+      status?: number;
+    };
+
+function normalizePath(path: string): string {
+  let p = path.trim();
+  while (p.startsWith("/")) p = p.slice(1);
+  if (!p) throw new Error("File path cannot be empty.");
+  if (p.includes("..")) throw new Error("File path cannot contain '..'.");
+  return p;
+}
+
+function normalizeHandlerPath(path: string): string {
+  let p = path.trim();
+  if (!p.startsWith("/")) p = "/" + p;
+  return p.replace(/\/+/g, "/");
+}
+
+// Returns a non-negative score on match, -1 otherwise. Exact match wins;
+// longer prefix wins among wildcard matches.
+function matchHandlerPath(pattern: string, path: string): number {
+  if (pattern === path) return 1_000_000;
+  if (pattern.endsWith("/*")) {
+    const prefix = pattern.slice(0, -2);
+    if (path === prefix || path.startsWith(prefix + "/")) {
+      return prefix.length;
+    }
+  }
+  if (pattern === "/*") return 0;
+  return -1;
+}
+
+function byteLength(text: string): number {
+  return new TextEncoder().encode(text).length;
+}
+
+function guessContentType(path: string): string {
+  const lower = path.toLowerCase();
+  if (lower.endsWith(".html") || lower.endsWith(".htm")) return "text/html; charset=utf-8";
+  if (lower.endsWith(".css")) return "text/css; charset=utf-8";
+  if (lower.endsWith(".js") || lower.endsWith(".mjs"))
+    return "application/javascript; charset=utf-8";
+  if (lower.endsWith(".json")) return "application/json; charset=utf-8";
+  if (lower.endsWith(".svg")) return "image/svg+xml";
+  if (lower.endsWith(".md") || lower.endsWith(".txt"))
+    return "text/plain; charset=utf-8";
+  if (lower.endsWith(".png")) return "image/png";
+  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+  return "text/plain; charset=utf-8";
 }
 
 function safeJSON(text: string): Record<string, unknown> {

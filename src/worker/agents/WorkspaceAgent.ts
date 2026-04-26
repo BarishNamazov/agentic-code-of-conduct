@@ -353,6 +353,260 @@ export class WorkspaceAgent extends Agent<Env, WorkspaceState> {
     await this.refreshWorkspaceState();
   }
 
+  // ---------- Files & handlers (UI façade over BehaviorAgent) ----------
+
+  @callable()
+  async listAgentFiles(agentId: string) {
+    const child = await this.requireBehaviorAgent(agentId);
+    return child.listFiles();
+  }
+
+  @callable()
+  async readAgentFile(agentId: string, path: string) {
+    const child = await this.requireBehaviorAgent(agentId);
+    return child.readFile(path);
+  }
+
+  @callable()
+  async writeAgentFile(input: {
+    agentId: string;
+    path: string;
+    content: string;
+    contentType?: string;
+  }) {
+    const child = await this.requireBehaviorAgent(input.agentId);
+    return child.writeFile({
+      path: input.path,
+      content: input.content,
+      contentType: input.contentType,
+    });
+  }
+
+  @callable()
+  async deleteAgentFile(agentId: string, path: string) {
+    const child = await this.requireBehaviorAgent(agentId);
+    return child.deleteFile(path);
+  }
+
+  @callable()
+  async listAgentHandlers(agentId: string) {
+    const child = await this.requireBehaviorAgent(agentId);
+    return child.listHandlers();
+  }
+
+  @callable()
+  async setAgentHandler(input: {
+    agentId: string;
+    method: string;
+    path: string;
+    spec: unknown;
+  }) {
+    const child = await this.requireBehaviorAgent(input.agentId);
+    return child.setHandler({
+      method: input.method,
+      path: input.path,
+      spec: input.spec as never,
+    });
+  }
+
+  @callable()
+  async deleteAgentHandler(agentId: string, id: string) {
+    const child = await this.requireBehaviorAgent(agentId);
+    return child.deleteHandler(id);
+  }
+
+  // Internal: serve an HTTP request targeted at a specific agent. Called
+  // from the worker fetch handler, not from the UI.
+  async serveAgentRequest(input: {
+    agentId: string;
+    kind: "files" | "web" | "handle";
+    path: string;
+    method: string;
+    body?: string;
+    contentType?: string;
+  }): Promise<{ status: number; contentType: string; body: string }> {
+    const agent = this.findAgent(input.agentId);
+    if (!agent) {
+      return jsonResp(404, { error: `Unknown agent ${input.agentId}` });
+    }
+    const child = await this.subAgent(BehaviorAgent, input.agentId);
+
+    if (input.kind === "files") {
+      if (input.method === "GET") {
+        if (!input.path || input.path === "/") {
+          return jsonResp(200, await child.listFiles());
+        }
+        const file = await child.readFile(input.path);
+        if (!file) return jsonResp(404, { error: "Not found" });
+        return {
+          status: 200,
+          contentType: file.contentType,
+          body: file.content,
+        };
+      }
+      if (input.method === "PUT" || input.method === "POST") {
+        const body = input.body ?? "";
+        let path = input.path;
+        let content = body;
+        let contentType = input.contentType;
+        if (
+          (input.method === "POST" && (!path || path === "/")) ||
+          (input.contentType ?? "").includes("application/json")
+        ) {
+          try {
+            const parsed = JSON.parse(body);
+            if (parsed && typeof parsed === "object") {
+              path = String((parsed as { path?: string }).path ?? path);
+              content = String((parsed as { content?: string }).content ?? "");
+              contentType =
+                (parsed as { contentType?: string }).contentType ?? contentType;
+            }
+          } catch {
+            /* fall back to raw body */
+          }
+        }
+        const meta = await child.writeFile({ path, content, contentType });
+        return jsonResp(200, meta);
+      }
+      if (input.method === "DELETE") {
+        await child.deleteFile(input.path);
+        return jsonResp(200, { ok: true });
+      }
+      return jsonResp(405, { error: "Method not allowed" });
+    }
+
+    if (input.kind === "web") {
+      let path = input.path;
+      if (!path || path === "/" || path === "") path = "index.html";
+      let file = await child.readFile(path);
+      if (!file && !path.includes(".")) {
+        // SPA-ish fallback to index.html when present.
+        file = await child.readFile("index.html");
+      }
+      if (!file) {
+        return {
+          status: 404,
+          contentType: "text/plain; charset=utf-8",
+          body: `Not found: ${path}`,
+        };
+      }
+      return {
+        status: 200,
+        contentType: file.contentType,
+        body: file.content,
+      };
+    }
+
+    // kind === "handle"
+    const handler = await child.findHandler(
+      input.method,
+      "/" + input.path.replace(/^\/+/, "")
+    );
+    if (!handler) {
+      return jsonResp(404, {
+        error: `No handler for ${input.method} ${input.path}`,
+      });
+    }
+    return this.executeHandlerSpec(handler.spec, {
+      child,
+      requestBody: input.body ?? "",
+      requestPath: "/" + input.path.replace(/^\/+/, ""),
+      method: input.method,
+    });
+  }
+
+  private async executeHandlerSpec(
+    spec: unknown,
+    ctx: {
+      child: { readFile: (p: string) => Promise<{
+        path: string;
+        content: string;
+        contentType: string;
+        size: number;
+        updatedAt: string;
+      } | null> };
+      requestBody: string;
+      requestPath: string;
+      method: string;
+    }
+  ): Promise<{ status: number; contentType: string; body: string }> {
+    if (!spec || typeof spec !== "object") {
+      return jsonResp(500, { error: "Handler spec is not an object." });
+    }
+    const s = spec as { kind?: string };
+    switch (s.kind) {
+      case "text": {
+        const t = spec as { body: string; contentType?: string; status?: number };
+        return {
+          status: t.status ?? 200,
+          contentType: t.contentType ?? "text/plain; charset=utf-8",
+          body: String(t.body ?? ""),
+        };
+      }
+      case "json": {
+        const j = spec as { body: unknown; status?: number };
+        return jsonResp(j.status ?? 200, j.body);
+      }
+      case "redirect": {
+        const r = spec as { location: string; status?: number };
+        return {
+          status: r.status ?? 302,
+          contentType: "text/plain; charset=utf-8",
+          body: r.location,
+        };
+      }
+      case "file": {
+        const f = spec as { path: string; status?: number };
+        const file = await ctx.child.readFile(f.path);
+        if (!file) return jsonResp(404, { error: `File not found: ${f.path}` });
+        return {
+          status: f.status ?? 200,
+          contentType: file.contentType,
+          body: file.content,
+        };
+      }
+      case "llm": {
+        const l = spec as {
+          prompt: string;
+          contentType?: string;
+          status?: number;
+        };
+        const userPart = ctx.requestBody
+          ? `\n\nRequest body:\n${ctx.requestBody}`
+          : "";
+        const text = await this.runLLMOnce(`${l.prompt}${userPart}`);
+        return {
+          status: l.status ?? 200,
+          contentType: l.contentType ?? "text/plain; charset=utf-8",
+          body: text,
+        };
+      }
+      default:
+        return jsonResp(500, {
+          error: `Unknown handler kind: ${String(s.kind)}`,
+        });
+    }
+  }
+
+  private async runLLMOnce(prompt: string): Promise<string> {
+    const { TOOL_REGISTRY } = await import("../runtime/tools");
+    const tool = TOOL_REGISTRY["llm.generate"];
+    if (!tool) return "";
+    const result = await tool.run(this.env, { prompt }, {
+      host: { searchMemory: () => [] },
+    });
+    if (typeof result.output === "string") return result.output;
+    if (result.error) return `Error: ${result.error}`;
+    return JSON.stringify(result.output ?? "");
+  }
+
+  private async requireBehaviorAgent(agentId: string) {
+    if (!this.findAgent(agentId)) {
+      throw new Error(`Unknown agent ${agentId}`);
+    }
+    return this.subAgent(BehaviorAgent, agentId);
+  }
+
   // Streaming run.
   @callable({ streaming: true })
   async runAgent(
@@ -472,6 +726,187 @@ export class WorkspaceAgent extends Agent<Env, WorkspaceState> {
              ORDER BY created_at DESC
              LIMIT 25`;
         },
+        writeAgentFile: async ({ actorAgentId, path, content, contentType }) => {
+          const child = await ws.requireBehaviorAgent(actorAgentId);
+          return child.writeFile({ path, content, contentType });
+        },
+        readAgentFile: async ({ actorAgentId, path }) => {
+          const child = await ws.requireBehaviorAgent(actorAgentId);
+          return child.readFile(path);
+        },
+        listAgentFiles: async ({ actorAgentId }) => {
+          const child = await ws.requireBehaviorAgent(actorAgentId);
+          return child.listFiles();
+        },
+        deleteAgentFile: async ({ actorAgentId, path }) => {
+          const child = await ws.requireBehaviorAgent(actorAgentId);
+          return child.deleteFile(path);
+        },
+        setAgentHandler: async ({ actorAgentId, method, path, spec }) => {
+          const child = await ws.requireBehaviorAgent(actorAgentId);
+          return child.setHandler({
+            method,
+            path,
+            spec: spec as never,
+          });
+        },
+        listAgentHandlers: async ({ actorAgentId }) => {
+          const child = await ws.requireBehaviorAgent(actorAgentId);
+          return child.listHandlers();
+        },
+        listAgents: async () => {
+          return ws
+            .sql<{
+              id: string;
+              name: string;
+              kind: string;
+              purpose: string | null;
+              parent_agent_id: string | null;
+            }>`
+              SELECT a.id, a.name, a.kind, a.parent_agent_id,
+                (SELECT json_extract(bv.normalized_json, '$.agent.purpose')
+                 FROM behavior_versions bv
+                 WHERE bv.id = a.current_behavior_version_id) AS purpose
+              FROM agents a
+              ORDER BY a.created_at DESC
+            `
+            .map((r) => ({
+              id: r.id,
+              name: r.name,
+              kind: r.kind,
+              purpose: r.purpose ?? null,
+              parentAgentId: r.parent_agent_id ?? null,
+            }));
+        },
+        searchAgents: async (query: string) => {
+          const like = `%${query.replace(/[%_]/g, "")}%`;
+          const rows = ws.sql<{
+            id: string;
+            name: string;
+            kind: string;
+            purpose: string | null;
+            raw_text: string | null;
+          }>`
+            SELECT a.id, a.name, a.kind,
+              json_extract(bv.normalized_json, '$.agent.purpose') AS purpose,
+              bv.raw_text
+            FROM agents a
+            LEFT JOIN behavior_versions bv ON bv.id = a.current_behavior_version_id
+            WHERE a.name LIKE ${like}
+               OR COALESCE(bv.raw_text, '') LIKE ${like}
+            ORDER BY a.created_at DESC
+            LIMIT 25
+          `;
+          return rows.map((r) => ({
+            id: r.id,
+            name: r.name,
+            kind: r.kind,
+            purpose: r.purpose ?? null,
+            behaviorSummary: (r.raw_text ?? "").slice(0, 400),
+          }));
+        },
+        getAgentBehavior: async (agentId: string) => {
+          const rows = ws.sql<{
+            name: string;
+            purpose: string | null;
+            raw_text: string;
+          }>`
+            SELECT a.name,
+              json_extract(bv.normalized_json, '$.agent.purpose') AS purpose,
+              bv.raw_text
+            FROM agents a
+            JOIN behavior_versions bv ON bv.id = a.current_behavior_version_id
+            WHERE a.id = ${agentId}
+            LIMIT 1
+          `;
+          const r = rows[0];
+          return r
+            ? { name: r.name, purpose: r.purpose ?? null, rawText: r.raw_text }
+            : null;
+        },
+        spawnAgent: async ({
+          actorAgentId,
+          name,
+          purpose,
+          behaviorText,
+          fromAgentId,
+          runId,
+          causedByActionId,
+          userInput,
+        }) => {
+          // If fromAgentId is given, clone that agent's behavior text.
+          let raw = behaviorText ?? "";
+          if (!raw && fromAgentId) {
+            const rows = ws.sql<{ raw_text: string }>`
+              SELECT bv.raw_text FROM agents a
+              JOIN behavior_versions bv ON bv.id = a.current_behavior_version_id
+              WHERE a.id = ${fromAgentId} LIMIT 1
+            `;
+            if (rows[0]) raw = rows[0].raw_text;
+          }
+          if (!raw) {
+            raw = `Agent: ${name}\nPurpose: ${purpose ?? "act on the user's request."}`;
+          }
+          const { bcir } = await normalizeBehavior(ws.env, { rawText: raw });
+          const behavior: BCIR = {
+            ...bcir,
+            agent: { ...bcir.agent, name, purpose: purpose ?? bcir.agent?.purpose },
+          };
+          const childAgentId = `agent_${crypto.randomUUID().slice(0, 8)}`;
+          const childBehaviorVersionId = `bv_${crypto.randomUUID().slice(0, 8)}`;
+          const now = new Date().toISOString();
+          ws.sql`
+            INSERT INTO behavior_versions
+            (id, agent_id, version_number, raw_format, raw_text, normalized_json,
+             compiler_warnings_json, supersedes_version_id, created_by, created_at)
+            VALUES (${childBehaviorVersionId}, ${childAgentId}, 1, ${behavior.raw.format},
+                    ${behavior.raw.text}, ${JSON.stringify(behavior)}, '[]', ${null},
+                    ${actorAgentId}, ${now})
+          `;
+          ws.sql`
+            INSERT INTO agents (id, name, kind, parent_agent_id,
+              current_behavior_version_id, status, created_at, updated_at)
+            VALUES (${childAgentId}, ${name}, 'spawned', ${actorAgentId},
+              ${childBehaviorVersionId}, 'active', ${now}, ${now})
+          `;
+          ws.sql`
+            INSERT INTO spawn_edges (id, parent_agent_id, child_agent_id, spawn_action_id, run_id, created_at)
+            VALUES (${`se_${crypto.randomUUID().slice(0, 8)}`}, ${actorAgentId}, ${childAgentId},
+                    ${causedByActionId}, ${runId}, ${now})
+          `;
+          const childAgent = await ws.subAgent(BehaviorAgent, childAgentId);
+          await childAgent.installBehavior({
+            agentId: childAgentId,
+            agentName: name,
+            behaviorVersionId: childBehaviorVersionId,
+            normalized: behavior,
+          });
+          // Run the child to completion, capturing its output.
+          let captured = "";
+          const captureSink: RunSink = {
+            send(chunk) {
+              if (chunk.type === "token" && typeof chunk.text === "string") {
+                captured += chunk.text;
+              }
+            },
+          };
+          const taskInput = (() => {
+            if (purpose && userInput) return `${purpose}\n\n--- Input ---\n${userInput}`;
+            return userInput || purpose || `Help with ${runId}`;
+          })();
+          await ws.runBehavior({
+            runId,
+            agentId: childAgentId,
+            userInput: taskInput,
+            sink: captureSink,
+            causedByActionId,
+          });
+          return { childAgentId, output: captured };
+        },
+        updateAgentBehavior: async ({ actorAgentId, behaviorText }) => {
+          const { bcir } = await normalizeBehavior(ws.env, { rawText: behaviorText });
+          return ws.reviseBehavior({ agentId: actorAgentId, normalized: bcir });
+        },
       },
       insertToolCall: ({ id, runId, actorAgentId, toolName, requestActionId, inputJson }) => {
         ws.sql`
@@ -531,6 +966,12 @@ export class WorkspaceAgent extends Agent<Env, WorkspaceState> {
           sink,
           causedByActionId: null,
         });
+      },
+      normalizeChildBehavior: async ({ name, rawText }) => {
+        const { bcir } = await normalizeBehavior(ws.env, { rawText });
+        // Force the agent name to the spawn-requested name so the BCIR
+        // matches the row stored in the agents table.
+        return { ...bcir, agent: { ...bcir.agent, name } };
       },
       refreshGraph: async () => {
         const graph = ws.buildGraph();
@@ -753,4 +1194,15 @@ function safeJSON(text: string): Record<string, unknown> {
   } catch {
     return { raw: text };
   }
+}
+
+function jsonResp(
+  status: number,
+  body: unknown
+): { status: number; contentType: string; body: string } {
+  return {
+    status,
+    contentType: "application/json; charset=utf-8",
+    body: JSON.stringify(body),
+  };
 }

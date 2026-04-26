@@ -23,24 +23,119 @@ export type ToolResult = {
 export type ToolDefinition = {
   name: string;
   description: string;
+  usage?: string;
   run: (
     env: ToolEnv,
     input: Record<string, unknown>,
-    ctx: { stream?: ToolStreamWriter; host: ToolHostQueries }
+    ctx: ToolCallContext
   ) => Promise<ToolResult>;
 };
 
 // Lookups that tools may need from the surrounding workspace.
 export type ToolHostQueries = {
   searchMemory(query: string): unknown[];
+  // File / handler operations against the *actor* agent's BehaviorAgent.
+  // Implemented by the workspace; returns null if no agent is in scope.
+  writeAgentFile?(input: {
+    actorAgentId: string;
+    path: string;
+    content: string;
+    contentType?: string;
+  }): Promise<unknown>;
+  readAgentFile?(input: {
+    actorAgentId: string;
+    path: string;
+  }): Promise<unknown>;
+  listAgentFiles?(input: { actorAgentId: string }): Promise<unknown>;
+  deleteAgentFile?(input: {
+    actorAgentId: string;
+    path: string;
+  }): Promise<unknown>;
+  setAgentHandler?(input: {
+    actorAgentId: string;
+    method: string;
+    path: string;
+    spec: unknown;
+  }): Promise<unknown>;
+  listAgentHandlers?(input: { actorAgentId: string }): Promise<unknown>;
+  // Workspace introspection / orchestration so the agentic loop can
+  // discover and reuse other agents.
+  listAgents?(): Promise<
+    {
+      id: string;
+      name: string;
+      kind: string;
+      purpose: string | null;
+      parentAgentId: string | null;
+    }[]
+  >;
+  searchAgents?(query: string): Promise<
+    {
+      id: string;
+      name: string;
+      kind: string;
+      purpose: string | null;
+      behaviorSummary: string;
+    }[]
+  >;
+  getAgentBehavior?(agentId: string): Promise<{
+    name: string;
+    purpose: string | null;
+    rawText: string;
+  } | null>;
+  spawnAgent?(input: {
+    actorAgentId: string;
+    name: string;
+    purpose?: string;
+    behaviorText?: string;
+    fromAgentId?: string;
+    runId: string;
+    causedByActionId: string;
+    userInput?: string;
+  }): Promise<{ childAgentId: string; output: string }>;
+  updateAgentBehavior?(input: {
+    actorAgentId: string;
+    behaviorText: string;
+  }): Promise<{ behaviorVersionId: string }>;
+};
+
+// Tools may need to know which agent invoked them (for self-extension tools).
+export type ToolCallContext = {
+  stream?: ToolStreamWriter;
+  host: ToolHostQueries;
+  actorAgentId?: string;
+  runId?: string;
+  causedByActionId?: string;
 };
 
 const DEFAULT_MODEL = "@cf/moonshotai/kimi-k2.6";
+
+// Synchronous (non-streaming) LLM call used by the agentic planner. Falls back
+// to the deterministic echo when no AI binding is configured.
+export async function generatePlannerText(
+  env: ToolEnv,
+  prompt: string
+): Promise<{ text: string; error?: string }> {
+  if (!env.AI) {
+    return { text: `[no AI binding] ${prompt.slice(0, 800)}` };
+  }
+  try {
+    const workersai = createWorkersAI({ binding: env.AI as never });
+    const { text } = await generateText({
+      model: workersai(DEFAULT_MODEL as never),
+      prompt,
+    });
+    return { text };
+  } catch (e) {
+    return { text: "", error: errorMessage(e) };
+  }
+}
 
 const llmGenerate: ToolDefinition = {
   name: "llm.generate",
   description:
     "Free-form text generation via the configured Workers AI binding (or echo fallback when AI is missing).",
+  usage: `input: { "prompt": "Text to send to the model" }`,
   async run(env, input, ctx) {
     const prompt = String(input.prompt ?? input.input ?? "");
     if (!prompt) return { error: "Missing 'prompt'." };
@@ -82,6 +177,7 @@ const memorySearch: ToolDefinition = {
   name: "memory.search",
   description:
     "Search the workspace's action log for prior actions whose serialized arguments contain the query string.",
+  usage: `input: { "query": "string to search for" }`,
   async run(_env, input, ctx) {
     const q = String(input.query ?? "").trim();
     if (!q) return { output: [] };
@@ -93,6 +189,7 @@ const httpFetch: ToolDefinition = {
   name: "http.fetch",
   description:
     "Fetch a URL with GET. Limited to https:// for safety. Returns truncated body.",
+  usage: `input: { "url": "https://example.com/path" }`,
   async run(_env, input) {
     const url = String(input.url ?? "");
     if (!url.startsWith("https://")) {
@@ -117,16 +214,275 @@ const httpFetch: ToolDefinition = {
   },
 };
 
+// ---- Self-extension tools ----
+// Each operates on the running agent's own BehaviorAgent storage. The
+// workspace wires the host implementations.
+
+const agentWriteFile: ToolDefinition = {
+  name: "agent.writeFile",
+  description:
+    "Write or overwrite a file in this agent's durable storage. " +
+    "Files are addressable at /api/agents/<id>/files/<path> and " +
+    "served as static web content at /api/agents/<id>/web/<path>.",
+  usage:
+    `input: { "path": "index.html", "content": "<!doctype html>...", ` +
+    `"contentType": "text/html; charset=utf-8" }`,
+  async run(_env, input, ctx) {
+    if (!ctx.actorAgentId || !ctx.host.writeAgentFile) {
+      return { error: "agent.writeFile is unavailable in this context." };
+    }
+    const path = String(input.path ?? "");
+    const content = String(input.content ?? "");
+    if (!path) return { error: "Missing 'path'." };
+    const meta = await ctx.host.writeAgentFile({
+      actorAgentId: ctx.actorAgentId,
+      path,
+      content,
+      contentType:
+        typeof input.contentType === "string" ? input.contentType : undefined,
+    });
+    return { output: meta };
+  },
+};
+
+const agentReadFile: ToolDefinition = {
+  name: "agent.readFile",
+  description: "Read a file from this agent's durable storage.",
+  usage: `input: { "path": "index.html" }`,
+  async run(_env, input, ctx) {
+    if (!ctx.actorAgentId || !ctx.host.readAgentFile) {
+      return { error: "agent.readFile is unavailable in this context." };
+    }
+    const path = String(input.path ?? "");
+    if (!path) return { error: "Missing 'path'." };
+    const file = await ctx.host.readAgentFile({
+      actorAgentId: ctx.actorAgentId,
+      path,
+    });
+    return { output: file };
+  },
+};
+
+const agentListFiles: ToolDefinition = {
+  name: "agent.listFiles",
+  description: "List files in this agent's durable storage.",
+  usage: `input: {}`,
+  async run(_env, _input, ctx) {
+    if (!ctx.actorAgentId || !ctx.host.listAgentFiles) {
+      return { error: "agent.listFiles is unavailable in this context." };
+    }
+    const files = await ctx.host.listAgentFiles({
+      actorAgentId: ctx.actorAgentId,
+    });
+    return { output: files };
+  },
+};
+
+const agentDeleteFile: ToolDefinition = {
+  name: "agent.deleteFile",
+  description: "Delete a file from this agent's durable storage.",
+  usage: `input: { "path": "index.html" }`,
+  async run(_env, input, ctx) {
+    if (!ctx.actorAgentId || !ctx.host.deleteAgentFile) {
+      return { error: "agent.deleteFile is unavailable in this context." };
+    }
+    const path = String(input.path ?? "");
+    if (!path) return { error: "Missing 'path'." };
+    const result = await ctx.host.deleteAgentFile({
+      actorAgentId: ctx.actorAgentId,
+      path,
+    });
+    return { output: result };
+  },
+};
+
+const agentSetHandler: ToolDefinition = {
+  name: "agent.setHandler",
+  description:
+    "Register or replace a request handler on this agent. Use this to expose " +
+    "served content or an endpoint at /api/agents/<id>/handle/<path>. " +
+    "Path matching is exact, or prefix-based when the registered path ends in /*.",
+  usage:
+    `input: { "method": "GET", "path": "/counter", "spec": { ... } }\n` +
+    `spec variants:\n` +
+    `- text: { "kind": "text", "body": "hello", "contentType": "text/plain; charset=utf-8", "status": 200 }\n` +
+    `- json: { "kind": "json", "body": { "ok": true }, "status": 200 }\n` +
+    `- file: { "kind": "file", "path": "index.html", "status": 200 } (serves a file previously written with agent.writeFile)\n` +
+    `- redirect: { "kind": "redirect", "location": "https://example.com", "status": 302 }\n` +
+    `- llm: { "kind": "llm", "prompt": "Answer requests for this endpoint.", "contentType": "text/plain; charset=utf-8" }\n` +
+    `example static page: first call agent.writeFile({ "path": "index.html", "content": "...", "contentType": "text/html; charset=utf-8" }), then agent.setHandler({ "method": "GET", "path": "/", "spec": { "kind": "file", "path": "index.html" } })`,
+  async run(_env, input, ctx) {
+    if (!ctx.actorAgentId || !ctx.host.setAgentHandler) {
+      return { error: "agent.setHandler is unavailable in this context." };
+    }
+    const method = String(input.method ?? "GET");
+    const path = String(input.path ?? "/");
+    const spec = input.spec ?? input.response ?? null;
+    if (!spec) return { error: "Missing handler 'spec'." };
+    const result = await ctx.host.setAgentHandler({
+      actorAgentId: ctx.actorAgentId,
+      method,
+      path,
+      spec,
+    });
+    return { output: result };
+  },
+};
+
+const agentListHandlers: ToolDefinition = {
+  name: "agent.listHandlers",
+  description: "List request handlers registered on this agent.",
+  usage: `input: {}`,
+  async run(_env, _input, ctx) {
+    if (!ctx.actorAgentId || !ctx.host.listAgentHandlers) {
+      return { error: "agent.listHandlers is unavailable in this context." };
+    }
+    const list = await ctx.host.listAgentHandlers({
+      actorAgentId: ctx.actorAgentId,
+    });
+    return { output: list };
+  },
+};
+
+const agentList: ToolDefinition = {
+  name: "agent.list",
+  description:
+    "List all agents in the workspace (id, name, kind, purpose). Use this to discover " +
+    "agents you might delegate work to via agent.spawn(fromAgentId).",
+  usage: `input: {}`,
+  async run(_env, _input, ctx) {
+    if (!ctx.host.listAgents) {
+      return { error: "agent.list is unavailable in this context." };
+    }
+    return { output: await ctx.host.listAgents() };
+  },
+};
+
+const agentSearch: ToolDefinition = {
+  name: "agent.search",
+  description:
+    "Search the workspace's agents by name / purpose / behavior text. Returns the matching " +
+    "agents with a short summary of their behavior.",
+  usage: `input: { "query": "agent name, purpose, or behavior terms" }`,
+  async run(_env, input, ctx) {
+    if (!ctx.host.searchAgents) {
+      return { error: "agent.search is unavailable in this context." };
+    }
+    const q = String(input.query ?? "").trim();
+    return { output: await ctx.host.searchAgents(q) };
+  },
+};
+
+const agentGetBehavior: ToolDefinition = {
+  name: "agent.getBehavior",
+  description:
+    "Return the full raw behavior text of another agent (by id) so you can decide whether to " +
+    "spawn from it.",
+  usage: `input: { "agentId": "agent id" }`,
+  async run(_env, input, ctx) {
+    if (!ctx.host.getAgentBehavior) {
+      return { error: "agent.getBehavior is unavailable in this context." };
+    }
+    const id = String(input.agentId ?? input.id ?? "");
+    if (!id) return { error: "Missing 'agentId'." };
+    return { output: await ctx.host.getAgentBehavior(id) };
+  },
+};
+
+const agentSpawn: ToolDefinition = {
+  name: "agent.spawn",
+  description:
+    "Spawn a child agent and run it to completion. Provide either `fromAgentId` (clone an " +
+    "existing agent's behavior) or `behavior` (free-form behavioral description). `userInput` " +
+    "is the task data passed to the child. Returns the child's final output.",
+  usage:
+    `input: { "name": "Helper", "purpose": "optional purpose", ` +
+    `"behavior": "behavior text or instructions", "userInput": "task data" }\n` +
+    `or input: { "name": "Helper", "fromAgentId": "existing agent id", "userInput": "task data" }`,
+  async run(_env, input, ctx) {
+    if (!ctx.actorAgentId || !ctx.host.spawnAgent) {
+      return { error: "agent.spawn is unavailable in this context." };
+    }
+    if (!ctx.runId || !ctx.causedByActionId) {
+      return { error: "agent.spawn requires a run context." };
+    }
+    const name = String(input.name ?? input.role ?? "Helper");
+    const purpose =
+      typeof input.purpose === "string" ? input.purpose : undefined;
+    const behaviorText =
+      typeof input.behavior === "string"
+        ? input.behavior
+        : typeof input.behaviorText === "string"
+          ? input.behaviorText
+          : undefined;
+    const fromAgentId =
+      typeof input.fromAgentId === "string" ? input.fromAgentId : undefined;
+    const userInput =
+      typeof input.userInput === "string"
+        ? input.userInput
+        : typeof input.input === "string"
+          ? input.input
+          : typeof input.task === "string"
+            ? input.task
+            : undefined;
+    const result = await ctx.host.spawnAgent({
+      actorAgentId: ctx.actorAgentId,
+      name,
+      purpose,
+      behaviorText,
+      fromAgentId,
+      runId: ctx.runId,
+      causedByActionId: ctx.causedByActionId,
+      userInput,
+    });
+    return { output: result };
+  },
+};
+
+const agentUpdateBehavior: ToolDefinition = {
+  name: "agent.updateBehavior",
+  description:
+    "Replace this agent's own behavior with new behavioral text. The new behavior takes effect " +
+    "for subsequent runs (the current run continues with the active step plan). Use this to " +
+    "permanently encode patterns the agent has learned.",
+  usage: `input: { "behaviorText": "complete replacement behavior text" }`,
+  async run(_env, input, ctx) {
+    if (!ctx.actorAgentId || !ctx.host.updateAgentBehavior) {
+      return { error: "agent.updateBehavior is unavailable in this context." };
+    }
+    const behaviorText = String(input.behaviorText ?? input.behavior ?? "");
+    if (!behaviorText.trim()) return { error: "Missing 'behaviorText'." };
+    return {
+      output: await ctx.host.updateAgentBehavior({
+        actorAgentId: ctx.actorAgentId,
+        behaviorText,
+      }),
+    };
+  },
+};
+
 export const TOOL_REGISTRY: Record<string, ToolDefinition> = {
   [llmGenerate.name]: llmGenerate,
   [memorySearch.name]: memorySearch,
   [httpFetch.name]: httpFetch,
+  [agentWriteFile.name]: agentWriteFile,
+  [agentReadFile.name]: agentReadFile,
+  [agentListFiles.name]: agentListFiles,
+  [agentDeleteFile.name]: agentDeleteFile,
+  [agentSetHandler.name]: agentSetHandler,
+  [agentListHandlers.name]: agentListHandlers,
+  [agentList.name]: agentList,
+  [agentSearch.name]: agentSearch,
+  [agentGetBehavior.name]: agentGetBehavior,
+  [agentSpawn.name]: agentSpawn,
+  [agentUpdateBehavior.name]: agentUpdateBehavior,
 };
 
 export function listAvailableTools() {
   return Object.values(TOOL_REGISTRY).map((t) => ({
     name: t.name,
     description: t.description,
+    usage: t.usage,
   }));
 }
 

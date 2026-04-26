@@ -45,6 +45,7 @@ export type ReactionIR = {
 export type ToolSpecIR = {
   name: string;
   description: string;
+  usage?: string;
   inputSchema?: unknown;
   requiresApproval?: boolean;
 };

@@ -103,7 +103,7 @@ export function BCIRView({ bcir }: { bcir: BCIR }) {
               <li
                 key={t.name}
                 className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs"
-                title={t.description}
+                title={t.usage ? `${t.description}\n\n${t.usage}` : t.description}
               >
                 <span className="mono text-emerald-300">{t.name}</span>
               </li>

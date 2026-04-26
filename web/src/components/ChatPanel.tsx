@@ -565,6 +565,7 @@ function AssistantBubble({
   ).length;
   const spawnedCount = turn.spawned.length;
   const isStreaming = turn.status === "running";
+  const visibleText = turn.text || primaryGeneratedText(turn, rootAgent.id);
 
   const subThreads = Array.from(turn.subThreads.values()).filter(
     (s) => s.text.trim().length > 0 || s.agentId !== rootAgent.id
@@ -584,9 +585,9 @@ function AssistantBubble({
           )}
         </div>
 
-        {turn.text || isStreaming ? (
+        {visibleText || isStreaming ? (
           <div className="rounded-2xl rounded-bl-sm border border-neutral-800 bg-neutral-900 px-4 py-3 text-sm leading-relaxed text-neutral-100 whitespace-pre-wrap">
-            {turn.text}
+            {visibleText}
             {isStreaming && <Caret />}
           </div>
         ) : null}
@@ -620,6 +621,19 @@ function AssistantBubble({
       </div>
     </div>
   );
+}
+
+function primaryGeneratedText(turn: AssistantTurn, rootAgentId: string): string {
+  const generated = Array.from(turn.tools.values()).filter(
+    (tool) => tool.tool === "llm.generate"
+  );
+  const rootGenerated =
+    generated.find((tool) => tool.actorAgentId === rootAgentId && tool.tokens) ??
+    generated.find((tool) => tool.actorAgentId === rootAgentId);
+  const fallback = rootGenerated ?? generated.find((tool) => tool.tokens) ?? generated[0];
+  if (!fallback) return "";
+  if (fallback.tokens) return fallback.tokens;
+  return typeof fallback.output === "string" ? fallback.output : "";
 }
 
 function Caret() {

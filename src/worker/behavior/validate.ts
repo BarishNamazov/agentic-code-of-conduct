@@ -80,14 +80,13 @@ export function validateBehavior(bcir: BCIR): ValidationResult {
 
 export function compileBehavior(bcir: BCIR): CompiledBehavior {
   const entrypoints: { reactionId: string; trigger: string }[] = [];
-  const tools = new Set<string>();
-  let allowSpawn = false;
+  const tools = new Set<string>(bcir.tools.map((t) => t.name));
+  let allowSpawn = bcir.permissions.some((p) => p.capability === "spawn");
 
   for (const r of bcir.reactions) {
     const firstTrigger = r.when[0]?.action ?? "Event.observed";
     entrypoints.push({ reactionId: r.id, trigger: firstTrigger });
     for (const t of r.then) {
-      if (t.action === "Tooling.called") tools.add(String(t.args.tool ?? ""));
       if (t.action.startsWith("Spawning.")) allowSpawn = true;
     }
   }

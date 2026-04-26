@@ -94,9 +94,22 @@ same origin over WebSocket via `useAgent("WorkspaceAgent")`.
   causedByActionId, causedByReactionId}` in the workspace's append-only log.
 * **Sub-agents** — children created via `Spawning.spawn` requests become
   first-class `BehaviorAgent` facets with their own SQLite mirror.
-* **Tools** — `llm.generate`, `memory.search`, `http.fetch`. Every call is
-  bracketed by `Tooling.called` (request) and `Tooling.completed/failed`
-  (attestation).
+* **Tools** — `llm.generate`, `memory.search`, `http.fetch`, plus
+  self-extension tools `agent.writeFile`, `agent.readFile`,
+  `agent.listFiles`, `agent.deleteFile`, `agent.setHandler`,
+  `agent.listHandlers`. Every call is bracketed by `Tooling.called`
+  (request) and `Tooling.completed/failed` (attestation).
+* **Files & handlers** — every agent has its own durable file system
+  and request-handler table. Files are reachable at
+  `/api/agents/<id>/files/<path>` (GET/PUT/DELETE list-or-blob) and
+  served as static web at `/api/agents/<id>/web/<path>` (with
+  `index.html` SPA fallback). Declarative request handlers registered
+  via `agent.setHandler` are reachable at
+  `/api/agents/<id>/handle/<path>`. Handler specs are JSON
+  (`{kind: "text"|"json"|"file"|"redirect"|"llm", ...}`) — interpreted
+  safely without `eval`. The agentic tool catalog includes per-tool input
+  examples, including concrete `agent.setHandler` specs for `text`, `json`,
+  `file`, `redirect`, and `llm` handlers.
 
 ## What is intentionally NOT in the MVP
 
@@ -107,4 +120,3 @@ same origin over WebSocket via `useAgent("WorkspaceAgent")`.
 
 These slot in cleanly because every interaction already flows through the
 workspace's append-only action log.
-
