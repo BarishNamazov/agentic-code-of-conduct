@@ -272,7 +272,7 @@ Per-event semantics:
   separate "final message" event; the assistant message is the
   concatenation of all `text_delta.delta` values.
 * `tool_use_start` — the agent is about to call an internal platform tool
-  (e.g. `agent.search`, `knowledge.search`, `web.fetch`). `toolUseId` is
+  (e.g. `agent.searchAgents`, `knowledge.search`, `web.fetch`). `toolUseId` is
   unique within the turn.
 * `input_json_delta` — partial JSON for a tool call's input, streamed in
   arbitrary chunks. Concatenated chunks for a given `toolUseId` form a

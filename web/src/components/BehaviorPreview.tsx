@@ -1,14 +1,15 @@
-import type { BCIR, CompileBehaviorResult } from "@shared/types";
+import type {
+  BCIR,
+  CompileBehaviorResult,
+  ObservationPatternIR,
+  StatePredicateIR,
+  ThenActionIR,
+} from "@shared/types";
 
 export function BehaviorPreview({ result }: { result: CompileBehaviorResult }) {
   const { normalized: bcir, validation } = result;
   return (
     <div className="space-y-4">
-      <ValidationSummary
-        ok={validation.ok}
-        warnings={validation.warnings}
-        errors={validation.errors}
-      />
       <BCIRView bcir={bcir} />
     </div>
   );
@@ -87,8 +88,8 @@ export function BCIRView({ bcir }: { bcir: BCIR }) {
               <div className="mt-2 leading-relaxed text-neutral-300">
                 {r.prose}
               </div>
-              <div className="mono mt-2 rounded-md border border-emerald-500/20 bg-emerald-500/5 px-2 py-1 text-[11px] text-emerald-300">
-                {r.formal}
+              <div className="mono mt-2 space-y-1 rounded-md border border-emerald-500/20 bg-emerald-500/5 px-2 py-2 text-[11px] text-emerald-300">
+                <ReactionSyntax when={r.when} where={r.where} then={r.then} />
               </div>
             </li>
           ))}
@@ -134,4 +135,58 @@ export function BCIRView({ bcir }: { bcir: BCIR }) {
       )}
     </div>
   );
+}
+
+function ReactionSyntax({
+  when,
+  where,
+  then,
+}: {
+  when: ObservationPatternIR[];
+  where: StatePredicateIR[];
+  then: ThenActionIR[];
+}) {
+  return (
+    <>
+      <SyntaxLine label="when" lines={when.map(formatWhen)} />
+      {where.length > 0 && <SyntaxLine label="where" lines={where.map(formatWhere)} />}
+      <SyntaxLine label="then" lines={then.map(formatThen)} />
+    </>
+  );
+}
+
+function SyntaxLine({ label, lines }: { label: string; lines: string[] }) {
+  return (
+    <div className="grid grid-cols-[3.5rem_minmax(0,1fr)] gap-2">
+      <span className="select-none text-neutral-500">{label}</span>
+      <div className="min-w-0 space-y-1">
+        {lines.map((line, i) => (
+          <div key={`${label}-${i}`} className="break-words">
+            {line}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function formatWhen(w: ObservationPatternIR) {
+  const args = formatArgs(w.args);
+  const bind = w.bind ? `${w.bind} = ` : "";
+  return `${bind}${w.action}${args}`;
+}
+
+function formatWhere(w: StatePredicateIR) {
+  const vars = w.variables.length > 0 ? ` [${w.variables.join(", ")}]` : "";
+  return `${w.concept}: ${w.text}${vars}`;
+}
+
+function formatThen(t: ThenActionIR) {
+  return `${t.posture} ${t.action}${formatArgs(t.args)}`;
+}
+
+function formatArgs(args: Record<string, string>) {
+  const entries = Object.entries(args);
+  if (entries.length === 0) return "";
+  return `(${entries.map(([key, value]) => `${key}: ${value}`).join(", ")})`;
 }

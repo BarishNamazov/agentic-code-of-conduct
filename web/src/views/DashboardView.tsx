@@ -54,7 +54,7 @@ export function DashboardView({
             Workspace
           </div>
           <h1 className="font-display mt-1 bg-gradient-to-br from-neutral-50 to-neutral-300 bg-clip-text text-3xl font-semibold tracking-tight text-transparent">
-            Behaving Agents
+            EthOS Dashboard
           </h1>
           <p className="mt-2 max-w-2xl text-sm text-neutral-400">
             Behavioral-code agents you have created. Every agent has stored,

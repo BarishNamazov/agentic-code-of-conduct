@@ -276,6 +276,8 @@ async function parseWithLLM(
       "normalize-behavior"
     );
 
+    console.log(`prompt: ${NORMALIZE_SYSTEM_PROMPT}\n${prompt}\n\nresponse: ${text}\nerror: ${error}`);
+
     if (error) {
       return {
         bcir: fallback,

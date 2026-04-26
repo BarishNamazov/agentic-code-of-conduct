@@ -6,7 +6,7 @@
 
 import { record } from "../action-log";
 import { summarize } from "../binding";
-import { TOOL_REGISTRY, type ToolResult } from "../tools";
+import { resolveToolName, TOOL_REGISTRY, type ToolResult } from "../tools";
 import type {
   RunBinding,
   RunContext,
@@ -25,14 +25,15 @@ export async function runTool(
   env: RuntimeEnv,
   binding: RunBinding
 ): Promise<ToolResult> {
-  const tool = TOOL_REGISTRY[toolName];
+  const canonicalToolName = resolveToolName(toolName);
+  const tool = TOOL_REGISTRY[canonicalToolName];
   const toolCallId = `tc_${crypto.randomUUID().slice(0, 8)}`;
 
   hooks.insertToolCall({
     id: toolCallId,
     runId: ctx.runId,
     actorAgentId: ctx.agentId,
-    toolName,
+    toolName: canonicalToolName,
     requestActionId,
     inputJson: JSON.stringify(args),
   });
@@ -40,7 +41,7 @@ export async function runTool(
   sink.send({
     type: "tool",
     toolCallId,
-    tool: toolName,
+    tool: canonicalToolName,
     input: args,
     actorAgentId: ctx.agentId,
   });
@@ -52,8 +53,8 @@ export async function runTool(
   });
 
   if (!tool) {
-    const err = `Unknown tool "${toolName}".`;
-    return await failTool(toolCallId, err, toolName, requestActionId, ctx, hooks, sink);
+    const err = `Unknown tool "${canonicalToolName}".`;
+    return await failTool(toolCallId, err, canonicalToolName, requestActionId, ctx, hooks, sink);
   }
 
   try {
@@ -74,7 +75,7 @@ export async function runTool(
       return await failTool(
         toolCallId,
         result.error,
-        toolName,
+        canonicalToolName,
         requestActionId,
         ctx,
         hooks,
@@ -104,7 +105,7 @@ export async function runTool(
         by: ctx.agentId,
         action: "Tooling.completed",
         args: {
-          tool: toolName,
+          tool: canonicalToolName,
           request: requestActionId,
           summary: summarize(result.output),
         },
@@ -117,7 +118,7 @@ export async function runTool(
     return result;
   } catch (e) {
     const err = e instanceof Error ? e.message : String(e);
-    return await failTool(toolCallId, err, toolName, requestActionId, ctx, hooks, sink);
+    return await failTool(toolCallId, err, canonicalToolName, requestActionId, ctx, hooks, sink);
   }
 }
 

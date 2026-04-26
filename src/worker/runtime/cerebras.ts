@@ -1,5 +1,7 @@
-const CEREBRAS_API_URL = "https://api.cerebras.ai/v1/chat/completions";
-const CEREBRAS_MODEL = "zai-glm-4.7";
+import SHARED_SYSTEM_PROMPT from "../prompts/shared-system.prompt";
+
+const OPENAI_API_URL = "https://api.openai.com/v1/chat/completions";
+const OPENAI_MODEL = "gpt-5.4-mini";
 
 export type LlmCallRecord = {
   id: string;
@@ -24,6 +26,17 @@ export function setLlmCallListener(l: LlmCallListener | null) {
   listener = l;
 }
 
+function sharedSystemPrompt(system?: string): string {
+  const specific = system?.trim();
+  return specific
+    ? `${SHARED_SYSTEM_PROMPT.trim()}\n\n${specific}`
+    : SHARED_SYSTEM_PROMPT.trim();
+}
+
+function recordPrompt(system: string, prompt: string): string {
+  return `[system] ${system}\n\n[user] ${prompt}`;
+}
+
 export async function cerebrasGenerate(
   apiKey: string,
   prompt: string,
@@ -32,36 +45,38 @@ export async function cerebrasGenerate(
   const id = `llm_${crypto.randomUUID().slice(0, 8)}`;
   const startedAt = new Date().toISOString();
   const startMs = Date.now();
+  const system = sharedSystemPrompt();
 
   const record: LlmCallRecord = {
     id,
-    model: CEREBRAS_MODEL,
+    model: OPENAI_MODEL,
     caller,
-    prompt,
+    prompt: recordPrompt(system, prompt),
     startedAt,
   };
 
   listener?.onStart({ ...record });
 
   try {
-    const res = await fetch(CEREBRAS_API_URL, {
+    const res = await fetch(OPENAI_API_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: CEREBRAS_MODEL,
+        model: OPENAI_MODEL,
         stream: false,
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0,
-        max_tokens: -1,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: prompt },
+        ],
       }),
     });
 
     if (!res.ok) {
       const body = await res.text();
-      const error = `Cerebras ${res.status}: ${body.slice(0, 400)}`;
+      const error = `OpenAI ${res.status}: ${body.slice(0, 400)}`;
       record.error = error;
       record.completedAt = new Date().toISOString();
       record.durationMs = Date.now() - startMs;
@@ -99,39 +114,38 @@ export async function cerebrasGenerateWithSystem(
   const id = `llm_${crypto.randomUUID().slice(0, 8)}`;
   const startedAt = new Date().toISOString();
   const startMs = Date.now();
+  const composedSystem = sharedSystemPrompt(system);
 
   const record: LlmCallRecord = {
     id,
-    model: CEREBRAS_MODEL,
+    model: OPENAI_MODEL,
     caller,
-    prompt: `[system] ${system}\n\n[user] ${prompt}`,
+    prompt: recordPrompt(composedSystem, prompt),
     startedAt,
   };
 
   listener?.onStart({ ...record });
 
   try {
-    const res = await fetch(CEREBRAS_API_URL, {
+    const res = await fetch(OPENAI_API_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: CEREBRAS_MODEL,
+        model: OPENAI_MODEL,
         stream: false,
         messages: [
-          { role: "system", content: system },
+          { role: "system", content: composedSystem },
           { role: "user", content: prompt },
         ],
-        temperature: 0,
-        max_tokens: -1,
       }),
     });
 
     if (!res.ok) {
       const body = await res.text();
-      const error = `Cerebras ${res.status}: ${body.slice(0, 400)}`;
+      const error = `OpenAI ${res.status}: ${body.slice(0, 400)}`;
       record.error = error;
       record.completedAt = new Date().toISOString();
       record.durationMs = Date.now() - startMs;

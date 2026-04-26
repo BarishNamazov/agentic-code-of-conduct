@@ -2,14 +2,14 @@
 //
 // Triggered by `Building.act`. Drives a JSON tool-calling loop using the LLM.
 // The loop sees the agent's behavior, the user input, and a catalog of tools;
-// it can call tools (including agent.spawn / agent.search / agent.communicate
+// it can call tools (including agent.spawn / agent.searchAgents / agent.communicate
 // / agent.updateBehavior / agent.writeFile / agent.setHandler / etc.) and
 // finally emits a `respond` decision streamed to the user as a token chunk.
 
 import type { BCIR, ReactionIR } from "../../../shared/types";
 import { record } from "../action-log";
 import { asString, summarize, truncate } from "../binding";
-import { generatePlannerText, TOOL_REGISTRY } from "../tools";
+import { generatePlannerText, resolveToolName, TOOL_REGISTRY } from "../tools";
 import AGENTIC_PLANNER_PROMPT from "../../prompts/agentic-planner.prompt";
 import { renderTemplate } from "../../prompts/template";
 import type {
@@ -28,8 +28,8 @@ const AGENTIC_TOOLS = [
   "knowledge.list",
   "knowledge.search",
   "knowledge.read",
-  "agent.list",
-  "agent.search",
+  "agent.listAgents",
+  "agent.searchAgents",
   "agent.getBehavior",
   "agent.spawn",
   "agent.communicate",
@@ -102,12 +102,13 @@ export async function executeBuilding(
       });
       continue;
     }
-    if (!TOOL_REGISTRY[decision.tool]) {
+    const toolName = resolveToolName(decision.tool);
+    if (!TOOL_REGISTRY[toolName]) {
       history.push({
         thought: decision.thought,
-        tool: decision.tool,
+        tool: toolName,
         input: decision.input,
-        error: `Unknown tool "${decision.tool}".`,
+        error: `Unknown tool "${toolName}".`,
       });
       continue;
     }
@@ -119,7 +120,7 @@ export async function executeBuilding(
         action: "Building.thought",
         args: {
           thought: decision.thought ?? "",
-          tool: decision.tool,
+          tool: toolName,
           input: decision.input ?? {},
         },
         behaviorVersionId: ctx.behaviorVersionId,
@@ -130,7 +131,7 @@ export async function executeBuilding(
       sink
     );
     const result = await runTool(
-      decision.tool,
+      toolName,
       decision.input ?? {},
       thoughtAction.id,
       ctx,
@@ -142,7 +143,7 @@ export async function executeBuilding(
     lastCausedBy = thoughtAction.id;
     history.push({
       thought: decision.thought,
-      tool: decision.tool,
+      tool: toolName,
       input: decision.input,
       output: result.output,
       error: result.error,

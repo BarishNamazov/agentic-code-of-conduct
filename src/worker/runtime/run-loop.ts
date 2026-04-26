@@ -14,6 +14,7 @@ import type { ReactionIR, ThenActionIR } from "../../shared/types";
 import { selectEntryReactionsLLM } from "../behavior/validate";
 import { record } from "./action-log";
 import { composeWithUserInput, resolveArgs } from "./binding";
+import { resolveToolName } from "./tools";
 import FULFILL_REACTION_PROMPT from "../prompts/fulfill-reaction.prompt";
 import { renderTemplate } from "../prompts/template";
 import { executeBuilding } from "./concepts/building";
@@ -101,6 +102,8 @@ async function executeReaction(
   sink: RunSink,
   env: RuntimeEnv
 ): Promise<number> {
+  seedBindingFromReaction(reaction, binding);
+
   const fired = await record(
     hooks,
     {
@@ -172,14 +175,15 @@ async function executeThenLine(
   // Dispatch by concept prefix. Each branch is a thin call into the concept
   // module — keeping this file an orchestrator, not a kitchen sink.
   if (line.action === "Tooling.called") {
-    const toolName = String(args.tool ?? "llm.generate");
+    const toolName = resolveToolName(String(args.tool ?? "llm.generate"));
     const enriched = { ...args };
     if (toolName === "llm.generate") {
       const userInput = typeof binding.input === "string" ? binding.input : "";
       const existing = typeof enriched.prompt === "string" ? enriched.prompt : "";
       enriched.prompt = composeWithUserInput(existing || `Respond to the user.`, userInput);
     }
-    await runTool(toolName, enriched, requestAction.id, ctx, hooks, sink, env, binding);
+    const result = await runTool(toolName, enriched, requestAction.id, ctx, hooks, sink, env, binding);
+    bindToolResultAliases(toolName, result.output, binding);
     return;
   }
 
@@ -260,4 +264,38 @@ async function runFallbackLLM(
     env,
     binding
   );
+}
+
+function seedBindingFromReaction(reaction: ReactionIR, binding: RunBinding) {
+  const input = typeof binding.input === "string" ? binding.input : "";
+  if (!input) return;
+
+  for (const trigger of reaction.when) {
+    if (trigger.action !== "UserInput.received") continue;
+    if (trigger.bind?.startsWith("?")) {
+      binding[trigger.bind.slice(1)] = input;
+    }
+    for (const value of Object.values(trigger.args)) {
+      if (typeof value === "string" && value.startsWith("?")) {
+        binding[value.slice(1)] = input;
+      }
+    }
+  }
+}
+
+function bindToolResultAliases(
+  toolName: string,
+  output: unknown,
+  binding: RunBinding
+) {
+  binding.results = output;
+
+  if (toolName.startsWith("knowledge.")) {
+    binding.sources = output;
+  }
+
+  if (toolName === "agent.searchAgents" || toolName === "agent.listAgents") {
+    binding.agents = output;
+    binding.agent = Array.isArray(output) ? output[0] : output;
+  }
 }

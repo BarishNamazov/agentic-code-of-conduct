@@ -29,7 +29,7 @@ export function Sidebar({
         <Logo />
         <div className="min-w-0">
           <div className="font-display truncate text-sm font-semibold tracking-tight text-neutral-50">
-            Behaving Agents
+            EthOS
           </div>
           <div className="text-[10px] uppercase tracking-[0.18em] text-neutral-500">
             workspace · default

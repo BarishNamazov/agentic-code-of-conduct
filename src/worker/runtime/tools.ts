@@ -154,6 +154,15 @@ export async function generatePlannerText(
   return cerebrasGenerate(env.CEREBRAS_API_KEY, prompt, caller);
 }
 
+const TOOL_NAME_ALIASES: Record<string, string> = {
+  "agent.list": "agent.listAgents",
+  "agent.search": "agent.searchAgents",
+};
+
+export function resolveToolName(name: string): string {
+  return TOOL_NAME_ALIASES[name] ?? name;
+}
+
 const llmGenerate: ToolDefinition = {
   name: "llm.generate",
   description:
@@ -349,29 +358,29 @@ const agentListHandlers: ToolDefinition = {
   },
 };
 
-const agentList: ToolDefinition = {
-  name: "agent.list",
+const agentListAgents: ToolDefinition = {
+  name: "agent.listAgents",
   description:
     "List all agents in the workspace (id, name, kind, purpose). Use this to discover " +
     "agents you might delegate work to via agent.spawn(fromAgentId).",
   usage: `input: {}`,
   async run(_env, _input, ctx) {
     if (!ctx.host.listAgents) {
-      return { error: "agent.list is unavailable in this context." };
+      return { error: "agent.listAgents is unavailable in this context." };
     }
     return { output: await ctx.host.listAgents() };
   },
 };
 
-const agentSearch: ToolDefinition = {
-  name: "agent.search",
+const agentSearchAgents: ToolDefinition = {
+  name: "agent.searchAgents",
   description:
     "Search the workspace's agents by name / purpose / behavior text. Returns the matching " +
     "agents with a short summary of their behavior.",
   usage: `input: { "query": "agent name, purpose, or behavior terms" }`,
   async run(_env, input, ctx) {
     if (!ctx.host.searchAgents) {
-      return { error: "agent.search is unavailable in this context." };
+      return { error: "agent.searchAgents is unavailable in this context." };
     }
     const q = String(input.query ?? "").trim();
     return { output: await ctx.host.searchAgents(q) };
@@ -583,8 +592,8 @@ export const TOOL_REGISTRY: Record<string, ToolDefinition> = {
   [agentDeleteFile.name]: agentDeleteFile,
   [agentSetHandler.name]: agentSetHandler,
   [agentListHandlers.name]: agentListHandlers,
-  [agentList.name]: agentList,
-  [agentSearch.name]: agentSearch,
+  [agentListAgents.name]: agentListAgents,
+  [agentSearchAgents.name]: agentSearchAgents,
   [agentGetBehavior.name]: agentGetBehavior,
   [agentSpawn.name]: agentSpawn,
   [agentUpdateBehavior.name]: agentUpdateBehavior,
