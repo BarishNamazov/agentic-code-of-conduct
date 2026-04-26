@@ -9,6 +9,7 @@ declare global {
     AI?: { run: (m: string, i: unknown, o?: unknown) => Promise<unknown> };
     ASSETS?: { fetch: (req: Request) => Promise<Response> };
     WorkspaceAgent: DurableObjectNamespace<WorkspaceAgent>;
+    BehaviorAgent: DurableObjectNamespace<BehaviorAgent>;
   }
 
   // Make Cloudflare's namespace alias resolve to our Env so the Agents SDK

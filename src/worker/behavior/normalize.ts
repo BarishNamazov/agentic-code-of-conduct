@@ -20,6 +20,8 @@ import type {
   ToolSpecIR,
 } from "../../shared/types";
 import { listAvailableTools } from "../runtime/tools";
+import { generateText } from "ai";
+import { createWorkersAI } from "workers-ai-provider";
 
 function uid(prefix = "id"): string {
   return `${prefix}_${crypto.randomUUID().slice(0, 8)}`;
@@ -403,7 +405,193 @@ function synthesizeFormal(
   return `when ${lhs} do ${rhs}`;
 }
 
-// --- Optional LLM polish ---
+// --- LLM-powered normalization ---
+
+const NORMALIZE_MODEL = "@cf/moonshotai/kimi-k2.6";
+
+const NORMALIZE_SYSTEM_PROMPT = `You are a behavior compiler. You convert natural-language agent descriptions into structured BCIR (Behavioral Code Intermediate Representation).
+
+Given the user's raw behavior text AND a draft BCIR produced by a deterministic parser, produce an improved BCIR JSON object.
+
+## BCIR Schema
+
+\`\`\`
+{
+  "agent": { "name": "<clear agent name>", "purpose": "<1-sentence purpose>" },
+  "concepts": [
+    { "name": "<PascalCase gerund, e.g. Summarizing>", "purpose": "<what this concept represents>", "actions": [{ "name": "<concept.action>", "params": ["param1"] }] }
+  ],
+  "reactions": [
+    {
+      "id": "<keep from draft or generate new>",
+      "name": "<short descriptive name, e.g. SummarizeOnInput>",
+      "prose": "<human-readable description of this reaction>",
+      "formal": "when <Trigger.action>(args) do <posture> <Action>(args)",
+      "when": [{ "bind": "?var", "action": "Concept.action", "args": { "key": "?var" } }],
+      "where": [],
+      "then": [
+        { "posture": "request", "action": "Concept.action", "args": { "key": "value" } }
+      ]
+    }
+  ]
+}
+\`\`\`
+
+## Key concepts for "then" actions
+
+- \`Building.act\` with \`{ "goal": "..." }\` — delegates to the agentic loop (multi-step LLM planning with tools). Use for complex tasks.
+- \`Tooling.called\` with \`{ "tool": "toolName", ... }\` — calls a specific tool directly.
+- \`Spawning.spawn\` with \`{ "name": "...", "purpose": "...", "behavior": "...", "task": "..." }\` — spawns a child agent.
+- \`Communicating.send\` with \`{ "message": "..." }\` — sends a response to the user.
+
+Available tools: llm.generate, memory.search, http.fetch, agent.writeFile, agent.readFile, agent.listFiles, agent.deleteFile, agent.setHandler, agent.listHandlers, agent.list, agent.search, agent.getBehavior, agent.spawn, agent.updateBehavior.
+
+## Triggers (when)
+
+- \`UserInput.received\` with \`{ "input": "?input" }\` — fires when the user sends a message. This is the most common trigger.
+- \`<Concept>.<action>\` — fires when a specific concept action is observed.
+
+## Rules
+
+1. Use \`?input\` to reference the user's input text in args.
+2. Every reaction must have at least one "when" trigger and one "then" action.
+3. Concept names should be PascalCase gerunds (Summarizing, Reviewing, Fetching).
+4. Reaction names should be descriptive PascalCase (SummarizeDocument, HandleUserQuery).
+5. For open-ended or complex tasks, prefer \`Building.act\` over chaining many specific tool calls.
+6. For simple direct tasks (just call one tool), use \`Tooling.called\` directly.
+7. Preserve reaction IDs from the draft when the reaction maps to the same intent.
+8. If the raw text describes a single-purpose agent (e.g. "summarize papers"), create focused reactions — don't over-decompose.
+9. The "formal" field is a human-readable summary: \`when Trigger(args) do posture Action(args); ...\`
+
+Respond with ONLY the JSON object (no markdown fences, no explanation). The JSON must have keys: agent, concepts, reactions.`;
+
+function buildNormalizePrompt(rawText: string, draft: BCIR): string {
+  const draftSummary = {
+    agent: draft.agent,
+    concepts: draft.concepts,
+    reactions: draft.reactions.map((r) => ({
+      id: r.id,
+      name: r.name,
+      prose: r.prose,
+      formal: r.formal,
+      when: r.when,
+      then: r.then,
+    })),
+  };
+
+  return `## Raw behavior text
+
+${rawText}
+
+## Deterministic parser draft
+
+${JSON.stringify(draftSummary, null, 2)}
+
+Produce an improved BCIR JSON. Fix generic names, add missing reactions, improve prose descriptions, and ensure correct action mappings. Keep the same structure if the draft is already good — only improve what needs improving.`;
+}
+
+function tryParseLLMResponse(text: string): {
+  agent?: { name: string; purpose?: string };
+  concepts?: ConceptIR[];
+  reactions?: ReactionIR[];
+} | null {
+  // Extract JSON from the response (handle markdown fences)
+  let json = text.trim();
+  const fenced = json.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
+  if (fenced) json = fenced[1]!.trim();
+
+  // Find the first { ... } block
+  const start = json.indexOf("{");
+  const end = json.lastIndexOf("}");
+  if (start === -1 || end === -1) return null;
+  json = json.slice(start, end + 1);
+
+  try {
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+}
+
+function validateLLMReaction(r: unknown): r is ReactionIR {
+  if (!r || typeof r !== "object") return false;
+  const obj = r as Record<string, unknown>;
+  return (
+    typeof obj.name === "string" &&
+    typeof obj.prose === "string" &&
+    Array.isArray(obj.when) &&
+    obj.when.length > 0 &&
+    Array.isArray(obj.then) &&
+    obj.then.length > 0
+  );
+}
+
+function mergeLLMResult(
+  draft: BCIR,
+  llmResult: {
+    agent?: { name: string; purpose?: string };
+    concepts?: ConceptIR[];
+    reactions?: ReactionIR[];
+  }
+): BCIR {
+  const agent = {
+    name: llmResult.agent?.name || draft.agent.name,
+    purpose: llmResult.agent?.purpose || draft.agent.purpose,
+  };
+
+  let reactions = draft.reactions;
+  if (llmResult.reactions && llmResult.reactions.length > 0) {
+    const validated = llmResult.reactions.filter(validateLLMReaction);
+    if (validated.length > 0) {
+      reactions = validated.map((r, i) => ({
+        id: r.id || uid("r"),
+        name: r.name || `R${i + 1}`,
+        prose: r.prose,
+        formal:
+          r.formal ||
+          synthesizeFormal(
+            r.when[0] ?? {
+              action: "UserInput.received",
+              args: { input: "?input" },
+            },
+            r.then
+          ),
+        when: r.when,
+        where: r.where || [],
+        then: r.then.map((t) => ({
+          posture: t.posture || "request",
+          action: t.action,
+          args: t.args || {},
+        })),
+      }));
+    }
+  }
+
+  let concepts = draft.concepts;
+  if (llmResult.concepts && llmResult.concepts.length > 0) {
+    concepts = llmResult.concepts
+      .filter(
+        (c): c is ConceptIR =>
+          !!c && typeof c === "object" && typeof c.name === "string"
+      )
+      .map((c) => ({
+        name: c.name,
+        purpose: c.purpose || `Concept ${c.name}.`,
+        principle: c.principle,
+        state: c.state,
+        actions: Array.isArray(c.actions) ? c.actions : [],
+      }));
+  }
+
+  return {
+    ...draft,
+    agent,
+    concepts,
+    reactions,
+    tools: collectTools(reactions),
+    permissions: collectPermissions(reactions),
+  };
+}
 
 async function polishWithLLM(
   env: { AI?: Ai },
@@ -421,12 +609,51 @@ async function polishWithLLM(
       ],
     };
   }
-  // We could call env.AI.run(...) here to ask for clean concept names / purposes.
-  // For MVP we keep this an opt-in stub and trust the deterministic parser.
-  return {
-    bcir: draft,
-    warnings: [],
-  };
+
+  try {
+    const workersai = createWorkersAI({ binding: env.AI as never });
+    const prompt = buildNormalizePrompt(draft.raw.text, draft);
+    const { text } = await generateText({
+      model: workersai(NORMALIZE_MODEL as never),
+      system: NORMALIZE_SYSTEM_PROMPT,
+      prompt,
+    });
+
+    const parsed = tryParseLLMResponse(text);
+    if (!parsed) {
+      return {
+        bcir: draft,
+        warnings: [
+          {
+            level: "warn",
+            message:
+              "LLM normalization returned unparseable output; falling back to deterministic parse.",
+          },
+        ],
+      };
+    }
+
+    const merged = mergeLLMResult(draft, parsed);
+    return {
+      bcir: merged,
+      warnings: [
+        {
+          level: "info",
+          message: "Behavior was normalized with LLM assistance.",
+        },
+      ],
+    };
+  } catch (e) {
+    return {
+      bcir: draft,
+      warnings: [
+        {
+          level: "warn",
+          message: `LLM normalization failed (${e instanceof Error ? e.message : "unknown error"}); falling back to deterministic parse.`,
+        },
+      ],
+    };
+  }
 }
 
 // --- Public entry point ---

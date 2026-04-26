@@ -1,5 +1,5 @@
 import { Agent, callable, type StreamingResponse } from "agents";
-import { BehaviorAgent } from "./BehaviorAgent";
+import type { BehaviorAgent } from "./BehaviorAgent";
 import type {
   ActingEnvelope,
   AgentDetail,
@@ -158,7 +158,7 @@ export class WorkspaceAgent extends Agent<Env, WorkspaceState> {
         ${behaviorVersionId}, 'active', ${now}, ${now})
     `;
 
-    const child = await this.subAgent(BehaviorAgent, agentId);
+    const child = await this.ensureBehaviorAgentInstalled(agentId);
     await child.installBehavior({
       agentId,
       agentName: input.name,
@@ -218,7 +218,7 @@ export class WorkspaceAgent extends Agent<Env, WorkspaceState> {
         updated_at = ${now}
       WHERE id = ${input.agentId}
     `;
-    const child = await this.subAgent(BehaviorAgent, input.agentId);
+    const child = await this.ensureBehaviorAgentInstalled(input.agentId);
     await child.installBehavior({
       agentId: input.agentId,
       agentName: agentRow.name,
@@ -244,7 +244,7 @@ export class WorkspaceAgent extends Agent<Env, WorkspaceState> {
     const agent = this.findAgent(agentId);
     if (!agent) throw new Error(`Unknown agent ${agentId}`);
 
-    const child = await this.subAgent(BehaviorAgent, agentId);
+    const child = await this.ensureBehaviorAgentInstalled(agentId);
     const installed = await child.getBehavior();
     if (!installed) throw new Error(`Agent ${agentId} has no installed behavior`);
 
@@ -338,11 +338,19 @@ export class WorkspaceAgent extends Agent<Env, WorkspaceState> {
   async deleteAgent(agentId: string): Promise<void> {
     const agent = this.findAgent(agentId);
     if (!agent) return;
-    // Wipe child storage (transitively wipes its descendants).
-    try {
-      this.deleteSubAgent(BehaviorAgent, agentId);
-    } catch {
-      /* ignore — sub-agent might not exist yet */
+    const agentIds = [
+      agentId,
+      ...this.sql<{ id: string }>`
+        SELECT id FROM agents WHERE parent_agent_id = ${agentId}
+      `.map((r) => r.id),
+    ];
+    for (const id of agentIds) {
+      try {
+        const child = this.getBehaviorAgent(id);
+        await child.resetStorage();
+      } catch {
+        /* ignore — child storage is best-effort cleanup */
+      }
     }
     this.sql`DELETE FROM action_log WHERE actor_agent_id = ${agentId}`;
     this.sql`DELETE FROM tool_calls WHERE actor_agent_id = ${agentId}`;
@@ -429,7 +437,7 @@ export class WorkspaceAgent extends Agent<Env, WorkspaceState> {
     if (!agent) {
       return jsonResp(404, { error: `Unknown agent ${input.agentId}` });
     }
-    const child = await this.subAgent(BehaviorAgent, input.agentId);
+    const child = await this.ensureBehaviorAgentInstalled(input.agentId);
 
     if (input.kind === "files") {
       if (input.method === "GET") {
@@ -600,11 +608,42 @@ export class WorkspaceAgent extends Agent<Env, WorkspaceState> {
     return JSON.stringify(result.output ?? "");
   }
 
+  private getBehaviorAgent(agentId: string) {
+    const id = this.env.BehaviorAgent.idFromName(agentId);
+    return this.env.BehaviorAgent.get(id) as unknown as BehaviorAgent;
+  }
+
+  private async ensureBehaviorAgentInstalled(agentId: string) {
+    const child = this.getBehaviorAgent(agentId);
+    const installed = await child.getBehavior();
+    const row = this.sql<{
+      name: string;
+      behavior_version_id: string;
+      normalized_json: string;
+    }>`
+      SELECT a.name, bv.id AS behavior_version_id, bv.normalized_json
+      FROM agents a
+      JOIN behavior_versions bv ON bv.id = a.current_behavior_version_id
+      WHERE a.id = ${agentId}
+      LIMIT 1
+    `[0];
+    if (!row) throw new Error(`Unknown agent ${agentId}`);
+    if (installed?.behaviorVersionId !== row.behavior_version_id) {
+      await child.installBehavior({
+        agentId,
+        agentName: row.name,
+        behaviorVersionId: row.behavior_version_id,
+        normalized: JSON.parse(row.normalized_json) as BCIR,
+      });
+    }
+    return child;
+  }
+
   private async requireBehaviorAgent(agentId: string) {
     if (!this.findAgent(agentId)) {
       throw new Error(`Unknown agent ${agentId}`);
     }
-    return this.subAgent(BehaviorAgent, agentId);
+    return this.ensureBehaviorAgentInstalled(agentId);
   }
 
   // Streaming run.
@@ -672,7 +711,7 @@ export class WorkspaceAgent extends Agent<Env, WorkspaceState> {
     sink: RunSink;
     causedByActionId: string | null;
   }): Promise<void> {
-    const child = await this.subAgent(BehaviorAgent, opts.agentId);
+    const child = await this.ensureBehaviorAgentInstalled(opts.agentId);
     await child.setRunning(true);
     try {
       const installed = await child.getBehavior();
@@ -705,7 +744,7 @@ export class WorkspaceAgent extends Agent<Env, WorkspaceState> {
         if (childAgentId === "workspace") return;
         if (!ws.findAgent(childAgentId)) return;
         try {
-          const child = await ws.subAgent(BehaviorAgent, childAgentId);
+          const child = await ws.ensureBehaviorAgentInstalled(childAgentId);
           await child.recordAction(envelope);
         } catch {
           /* best-effort */
@@ -874,7 +913,7 @@ export class WorkspaceAgent extends Agent<Env, WorkspaceState> {
             VALUES (${`se_${crypto.randomUUID().slice(0, 8)}`}, ${actorAgentId}, ${childAgentId},
                     ${causedByActionId}, ${runId}, ${now})
           `;
-          const childAgent = await ws.subAgent(BehaviorAgent, childAgentId);
+          const childAgent = await ws.getBehaviorAgent(childAgentId);
           await childAgent.installBehavior({
             agentId: childAgentId,
             agentName: name,
@@ -949,7 +988,7 @@ export class WorkspaceAgent extends Agent<Env, WorkspaceState> {
           VALUES (${`se_${crypto.randomUUID().slice(0, 8)}`}, ${parentAgentId}, ${childAgentId},
                   ${causedByActionId}, ${runId}, ${now})
         `;
-        const child = await ws.subAgent(BehaviorAgent, childAgentId);
+        const child = await ws.getBehaviorAgent(childAgentId);
         await child.installBehavior({
           agentId: childAgentId,
           agentName: name,

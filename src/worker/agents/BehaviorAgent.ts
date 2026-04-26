@@ -155,6 +155,20 @@ export class BehaviorAgent extends Agent<Env, BehaviorAgentState> {
     this.setState({ ...this.state, status: running ? "running" : "ready" });
   }
 
+  async resetStorage(): Promise<{ ok: boolean }> {
+    this.sql`DELETE FROM local_handlers`;
+    this.sql`DELETE FROM local_files`;
+    this.sql`DELETE FROM local_actions`;
+    this.sql`DELETE FROM local_behavior`;
+    this.setState({
+      agentId: null,
+      agentName: null,
+      behaviorVersionId: null,
+      status: "empty",
+    });
+    return { ok: true };
+  }
+
   // ---------- Files ----------
 
   async writeFile(input: {
