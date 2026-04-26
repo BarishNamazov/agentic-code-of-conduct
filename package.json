@@ -1,0 +1,38 @@
+{
+  "name": "behaving-agents",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev:worker": "wrangler dev",
+    "dev:web": "vite --config web/vite.config.ts",
+    "dev": "concurrently -n worker,web -c blue,magenta \"npm:dev:worker\" \"npm:dev:web\"",
+    "build:web": "vite build --config web/vite.config.ts",
+    "build": "npm run build:web",
+    "typecheck:worker": "tsc -p tsconfig.worker.json --noEmit",
+    "typecheck:web": "tsc -p web/tsconfig.json --noEmit",
+    "typecheck": "npm run typecheck:worker && npm run typecheck:web",
+    "deploy": "npm run build && wrangler deploy"
+  },
+  "dependencies": {
+    "agents": "0.11.5",
+    "ai": "6.0.168",
+    "workers-ai-provider": "^3.1.12",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "zod": "^4.1.8"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250424.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.2",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "concurrently": "^9.1.2",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.16",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7",
+    "wrangler": "^4.85.0"
+  }
+}

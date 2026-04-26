@@ -1,0 +1,30 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "behaving-agents",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-04-25",
+  "compatibility_flags": ["nodejs_compat", "experimental"],
+  "ai": {
+    "binding": "AI"
+  },
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/agents/*", "/api/*"]
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "WorkspaceAgent",
+        "class_name": "WorkspaceAgent"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["WorkspaceAgent"]
+    }
+  ]
+}
