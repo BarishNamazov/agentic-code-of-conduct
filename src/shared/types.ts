@@ -294,3 +294,19 @@ export type AgentDetail = {
   children: AgentSummary[];
   recentRuns: RunSummary[];
 };
+
+// Snapshot of the full context that will be sent to the LLM planner on the
+// first agentic step for a given user input. Surfaced through the UI's
+// "Context Viewer" so developers can inspect exactly what the agent sees.
+export type AgentContextPreview = {
+  agentId: string;
+  agentName: string;
+  agentPurpose: string;
+  reactions: string;
+  toolCatalog: string;
+  userInput: string;
+  goal: string;
+  history: string;
+  promptTemplate: string;
+  rendered: string;
+};

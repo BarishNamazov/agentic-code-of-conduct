@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { TimelineEvent, WorkspaceState } from "@shared/types";
 import type { WorkspaceAgentClient } from "../lib/agent-client";
 import type { Route } from "../App";
@@ -6,7 +6,7 @@ import { identityFor } from "../lib/theme";
 
 export function DashboardView({
   state,
-  agent: _agent,
+  agent,
   navigate,
 }: {
   state: WorkspaceState;
@@ -15,7 +15,30 @@ export function DashboardView({
 }) {
   const topLevel = state.agents.filter((a) => a.kind === "top_level");
   const spawned = state.agents.length - topLevel.length;
-  const events = state.recentEvents;
+
+  // The workspace pushes `recentEvents` only at run boundaries, so when the
+  // dashboard mounts (or the run/agent count changes) we additionally pull
+  // fresh actions over RPC. This guarantees the activity chart and KPIs are
+  // never stale for an active workspace.
+  const [fetchedEvents, setFetchedEvents] = useState<TimelineEvent[] | null>(
+    null
+  );
+  useEffect(() => {
+    let cancelled = false;
+    agent.stub
+      .getRecentActions(200)
+      .then((rows) => {
+        if (!cancelled) setFetchedEvents(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setFetchedEvents(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [agent, state.agents.length, state.activeRuns.length, state.recentEvents.length]);
+
+  const events = fetchedEvents ?? state.recentEvents;
 
   const stats = useMemo(() => deriveStats(events), [events]);
   const buckets = useMemo(() => bucketEvents(events, 24), [events]);

@@ -1,0 +1,9 @@
+## Raw behavior text
+
+${RAW_BEHAVIOR_TEXT}
+
+## Fallback BCIR skeleton
+
+${FALLBACK_BCIR}
+
+Produce a complete BCIR JSON object. Infer the agent name, purpose, concepts, reactions, triggers, and actions from the raw behavior text. Use the fallback skeleton only as a runnable default when the raw behavior is too vague.

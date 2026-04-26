@@ -18,6 +18,8 @@ import {
 import { Timeline } from "./Timeline";
 import { AutoTextarea } from "./AutoTextarea";
 import { JsonViewer } from "./JsonViewer";
+import { ContextViewer } from "./ContextViewer";
+import type { WorkspaceAgentClient } from "../lib/agent-client";
 
 const TEXT_ATTACHMENT_MAX_BYTES = 256 * 1024;
 const IMAGE_ATTACHMENT_MAX_BYTES = 4 * 1024 * 1024;
@@ -26,6 +28,7 @@ export function ChatPanel({
   rootAgent,
   allAgents,
   chatStore,
+  agent,
   onRun,
   onAfterRun,
 }: {
@@ -39,6 +42,7 @@ export function ChatPanel({
       sessionId: string
     ): Promise<{ ok: boolean }>;
   };
+  agent: WorkspaceAgentClient;
   onRun: (
     userInput: string,
     handlers: {
@@ -56,6 +60,7 @@ export function ChatPanel({
   const [pending, setPending] = useState<Attachment[]>([]);
   const [running, setRunning] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [contextOpen, setContextOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -300,8 +305,8 @@ export function ChatPanel({
 
   return (
     <section className="relative flex h-[72vh] min-h-[520px] flex-col overflow-hidden rounded-xl border border-neutral-800/80 bg-surface-raised/60 shadow-card backdrop-blur-sm">
-      <header className="flex items-center justify-between gap-2 border-b border-neutral-800/80 bg-neutral-900/40 px-4 py-2.5">
-        <div className="flex min-w-0 items-center gap-2">
+      <header className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5 border-b border-neutral-800/80 bg-neutral-900/40 px-4 py-2.5">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
           <span className="relative h-2.5 w-2.5 shrink-0">
             <span className="absolute inset-0 animate-ping rounded-full bg-emerald-400/40" />
             <span className="absolute inset-0 rounded-full bg-emerald-400" />
@@ -321,7 +326,14 @@ export function ChatPanel({
             </span>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          <button
+            onClick={() => setContextOpen(true)}
+            className="btn"
+            title="Inspect the prompt that will be sent to the agent"
+          >
+            <ContextIcon /> Context
+          </button>
           <button
             onClick={() => setHistoryOpen((v) => !v)}
             disabled={running}
@@ -466,6 +478,16 @@ export function ChatPanel({
           </button>
         </div>
       </div>
+
+      <ContextViewer
+        open={contextOpen}
+        onClose={() => setContextOpen(false)}
+        agent={agent}
+        rootAgent={rootAgent}
+        turns={turns}
+        pendingInput={input}
+        pendingAttachments={pending}
+      />
     </section>
   );
 }
@@ -697,7 +719,7 @@ function AssistantBubble({
           </button>
         </div>
 
-        {traceOpen && <Trace turn={turn} />}
+        {traceOpen && <Trace turn={turn} agentNames={agentNames} />}
       </div>
     </div>
   );
@@ -766,7 +788,13 @@ function SubBubble({
   );
 }
 
-function Trace({ turn }: { turn: AssistantTurn }) {
+function Trace({
+  turn,
+  agentNames,
+}: {
+  turn: AssistantTurn;
+  agentNames: Map<string, string>;
+}) {
   const tools = Array.from(turn.tools.values());
   return (
     <div className="space-y-3 rounded-md border border-neutral-800 bg-neutral-950/50 p-3">
@@ -803,7 +831,7 @@ function Trace({ turn }: { turn: AssistantTurn }) {
           <h4 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
             Action timeline ({turn.events.length})
           </h4>
-          <Timeline events={turn.events} density="compact" />
+          <Timeline events={turn.events} density="compact" agentNames={agentNames} />
         </section>
       )}
     </div>
@@ -875,5 +903,18 @@ function ToolRow({ tool }: { tool: ToolRecord }) {
         </div>
       )}
     </li>
+  );
+}
+
+function ContextIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path
+        d="M4 5h16M4 12h10M4 19h16"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
+    </svg>
   );
 }

@@ -2,6 +2,7 @@ import { Agent, callable, type StreamingResponse } from "agents";
 import type { BehaviorAgent } from "./BehaviorAgent";
 import type {
   ActingEnvelope,
+  AgentContextPreview,
   AgentDetail,
   AgentGraph,
   AgentSummary,
@@ -28,6 +29,7 @@ import {
   type RunHooks,
   type RunSink,
 } from "../runtime/run-loop";
+import { previewAgenticContext } from "../runtime/concepts/building";
 import { executeCommunicating } from "../runtime/concepts/communicating";
 import { listAvailableTools } from "../runtime/tools";
 
@@ -310,6 +312,20 @@ export class WorkspaceAgent extends Agent<Env, WorkspaceState> {
     }>`SELECT normalized_json FROM behavior_versions WHERE id = ${versionId}`;
     const row = rows[0];
     return row ? (JSON.parse(row.normalized_json) as BCIR) : null;
+  }
+
+  @callable()
+  async previewAgentContext(
+    agentId: string,
+    userInput: string
+  ): Promise<AgentContextPreview> {
+    const agent = this.findAgent(agentId);
+    if (!agent) throw new Error(`Unknown agent ${agentId}`);
+    const child = await this.ensureBehaviorAgentInstalled(agentId);
+    const installed = await child.getBehavior();
+    if (!installed) throw new Error(`Agent ${agentId} has no installed behavior`);
+    const parts = previewAgenticContext(installed.normalized, userInput, userInput, []);
+    return { agentId, ...parts };
   }
 
   @callable()

@@ -64,6 +64,12 @@ export function TimelineView({
     });
   }, [events, filter, query]);
 
+  const agentNames = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const a of state.agents) m.set(a.id, a.name);
+    return m;
+  }, [state.agents]);
+
   // Show events newest-last for a "live console" feeling.
   const ordered = [...filtered].sort((a, b) =>
     a.createdAt.localeCompare(b.createdAt)
@@ -130,7 +136,7 @@ export function TimelineView({
         </div>
       ) : (
         <div className="card p-3">
-          <Timeline events={ordered} />
+          <Timeline events={ordered} agentNames={agentNames} />
         </div>
       )}
     </div>

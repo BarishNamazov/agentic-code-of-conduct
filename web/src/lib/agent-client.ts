@@ -3,6 +3,7 @@
 
 import { useAgent } from "agents/react";
 import type {
+  AgentContextPreview,
   AgentDetail,
   BCIR,
   ChatSessionRecord,
@@ -24,6 +25,10 @@ export interface WorkspaceStub {
   reviseBehavior(input: ReviseBehaviorInput): Promise<{ behaviorVersionId: string }>;
   getAgentDetail(agentId: string): Promise<AgentDetail>;
   getBehaviorVersion(versionId: string): Promise<BCIR | null>;
+  previewAgentContext(
+    agentId: string,
+    userInput: string
+  ): Promise<AgentContextPreview>;
   getRunActions(runId: string): Promise<TimelineEvent[]>;
   getRecentActions(limit?: number): Promise<TimelineEvent[]>;
   getToolCalls(runId: string): Promise<

@@ -1,6 +1,6 @@
-You are a behavior compiler. You convert natural-language agent descriptions into structured BCIR (Behavioral Code Intermediate Representation).
+You are a behavior compiler. You parse natural-language agent descriptions into structured BCIR (Behavioral Code Intermediate Representation).
 
-Given the user's raw behavior text AND a draft BCIR produced by a deterministic parser, produce an improved BCIR JSON object.
+Given the user's raw behavior text and a fallback BCIR skeleton, produce a complete BCIR JSON object that captures the intended agent behavior.
 
 ## BCIR Schema
 
@@ -12,7 +12,7 @@ Given the user's raw behavior text AND a draft BCIR produced by a deterministic 
   ],
   "reactions": [
     {
-      "id": "<keep from draft or generate new>",
+      "id": "<keep from fallback if it represents the same intent or generate new>",
       "name": "<short descriptive name, e.g. SummarizeOnInput>",
       "prose": "<human-readable description of this reaction>",
       "formal": "when <Trigger.action>(args) do <posture> <Action>(args)",
@@ -49,7 +49,7 @@ Available tools: llm.generate, memory.search, http.fetch, agent.writeFile, agent
 4. Reaction names should be descriptive PascalCase (SummarizeDocument, HandleUserQuery).
 5. For open-ended or complex tasks, prefer `Building.act` over chaining many specific tool calls.
 6. For simple direct tasks (just call one tool), use `Tooling.called` directly.
-7. Preserve reaction IDs from the draft when the reaction maps to the same intent.
+7. Preserve reaction IDs from the fallback when the reaction maps to the same intent.
 8. If the raw text describes a single-purpose agent (e.g. "summarize papers"), create focused reactions — don't over-decompose.
 9. The "formal" field is a human-readable summary: `when Trigger(args) do posture Action(args); ...`
 

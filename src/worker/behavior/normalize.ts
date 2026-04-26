@@ -2,12 +2,9 @@
 //
 // Pipeline:
 //   1. If JSON parses and looks like BCIR, return it.
-//   2. Try the lightweight markdown / DSL parser.
-//   3. If `env.AI` is available, ask an LLM to fill in the gaps.
-//   4. Otherwise return whatever the parser produced with low-confidence warnings.
-//
-// We deliberately do not require the LLM. The deterministic parser must always
-// be able to produce a runnable (if minimal) BCIR.
+//   2. Ask an LLM to parse casual behavior text into BCIR.
+//   3. If the LLM is unavailable or returns invalid JSON, return a generic
+//      runnable BCIR that delegates to the agentic loop.
 
 import type {
   BCIR,
@@ -16,13 +13,16 @@ import type {
   CompilerWarning,
   ConceptIR,
   ReactionIR,
-  ThenActionIR,
   ToolSpecIR,
 } from "../../shared/types";
 import { listAvailableTools } from "../runtime/tools";
 import { generateText } from "ai";
 import { createWorkersAI } from "workers-ai-provider";
 import NORMALIZE_SYSTEM_PROMPT from "../prompts/normalize-behavior.prompt";
+import NORMALIZE_USER_PROMPT from "../prompts/normalize-behavior-user.prompt";
+import { renderTemplate } from "../prompts/template";
+
+const NORMALIZE_MODEL = "@cf/moonshotai/kimi-k2.6";
 
 function uid(prefix = "id"): string {
   return `${prefix}_${crypto.randomUUID().slice(0, 8)}`;
@@ -56,257 +56,13 @@ function tryParseBCIR(text: string): BCIR | null {
   return null;
 }
 
-// --- DSL / Markdown parser ---
-
-const KNOWN_KERNEL_CONCEPTS = new Set([
-  "Tooling",
-  "Spawning",
-  "Communicating",
-  "Approving",
-  "Revising",
-  "Running",
-  "Requesting",
-  "Creating",
-  "Building",
-  "UserInput",
-]);
-
-const VERB_TO_CONCEPT: Record<string, string> = {
-  read: "Reading",
-  reading: "Reading",
-  extract: "Claiming",
-  claim: "Claiming",
-  search: "Searching",
-  searched: "Searching",
-  summarize: "Summarizing",
-  summarise: "Summarizing",
-  summary: "Summarizing",
-  review: "Reviewing",
-  reviewing: "Reviewing",
-  spawn: "Spawning",
-  call: "Tooling",
-  send: "Communicating",
-  message: "Communicating",
-  email: "Communicating",
-  ask: "Communicating",
-  discuss: "Communicating",
-  converse: "Communicating",
-  talk: "Communicating",
-  consult: "Communicating",
-  write: "Writing",
-  generate: "Generating",
-  fetch: "Fetching",
-  analyze: "Analyzing",
-  classify: "Classifying",
-  notify: "Notifying",
-  approve: "Approving",
-  reply: "Communicating",
-  respond: "Communicating",
-};
-
-function gerund(verb: string): string {
-  const v = verb.toLowerCase();
-  if (v.endsWith("e")) return cap(v.slice(0, -1) + "ing");
-  if (/[^aeiou][aeiou][^aeiouwy]$/.test(v)) {
-    return cap(v + v.slice(-1) + "ing");
-  }
-  return cap(v + "ing");
-}
-
-function cap(s: string): string {
-  return s.charAt(0).toUpperCase() + s.slice(1);
-}
-
-function extractAgentName(text: string): string | null {
-  const m =
-    text.match(/^\s*Agent[:\s]+([^\n]+)/im) ||
-    text.match(/^\s*#\s+Agent[:\s]+([^\n]+)/im) ||
-    text.match(/^\s*name[:\s]+["']?([^"'\n]+)/im);
-  return m && m[1] ? m[1].trim() : null;
-}
-
-function extractPurpose(text: string): string | undefined {
-  const m =
-    text.match(/^\s*Purpose[:\s]+([^\n]+)/im) ||
-    text.match(/^\s*Description[:\s]+([^\n]+)/im);
-  return m && m[1] ? m[1].trim() : undefined;
-}
-
-// Heuristically split prose into reaction-shaped sentences.
-// Recognises "When X, do Y", "After X, Y", "If X, Y", "For each X, Y".
-function extractReactionSentences(text: string): string[] {
-  const lines = text
-    .split(/\n+/)
-    .map((l) => l.replace(/^[-*\d.\s>]+/, "").trim())
-    .filter(Boolean);
-  const sentences: string[] = [];
-  for (const line of lines) {
-    // also split on ". " sentence boundaries
-    for (const part of line.split(/(?<=[.!?])\s+(?=[A-Z])/)) {
-      const t = part.trim();
-      if (!t) continue;
-      if (/^(when|after|if|on|whenever|once|for each)\b/i.test(t)) {
-        sentences.push(t);
-      }
-    }
-  }
-  return sentences;
-}
-
-const ACTION_VERBS = Object.keys(VERB_TO_CONCEPT);
-const VERB_RE = new RegExp(
-  `\\b(${ACTION_VERBS.join("|")})\\b([\\s\\S]*?)(?=$|,|\\.|;)`,
-  "gi"
-);
-
-// Pronouns and meta-references that point back at the triggering input
-// rather than to a literal value. When a behavior says
-// `When the user submits a paper draft, read it.` the "it" must resolve
-// to the actual draft, not to the literal string "it".
-const INPUT_PRONOUN_RE =
-  /^(it|this|that|them|those|these|the (?:input|message|document|draft|text|content|prompt|request|paper|file|submission)|user (?:input|message))(\s+.*)?$/i;
-
-function actionFromVerb(verb: string, rest: string): {
-  posture: "request" | "attest";
-  action: string;
-  args: Record<string, string>;
-} {
-  const v = verb.toLowerCase();
-  const concept = VERB_TO_CONCEPT[v] ?? cap(v);
-  // All verbs map to request posture today; attest comes from explicit
-  // past-tense action phrasing handled elsewhere.
-  const posture: "request" | "attest" = "request";
-  // Try to extract an object/argument string
-  let arg = rest
-    .replace(/^[\s,:;-]+/, "")
-    .replace(/^(the|a|an|some)\s+/i, "")
-    .trim();
-
-  // If the object is a pronoun referring back to the user's input,
-  // bind to ?input so the run loop substitutes the real value.
-  let argRef: string | null = null;
-  if (arg && INPUT_PRONOUN_RE.test(arg)) {
-    argRef = "?input";
-    arg = "";
-  }
-
-  const action = `${concept}.${normalisedAction(v)}`;
-  const args: Record<string, string> = {};
-  if (argRef) {
-    args.object = argRef;
-  } else if (arg) {
-    args.object = arg;
-  } else {
-    args.object = "?input";
-  }
-  return { posture, action, args };
-}
-
-function normalisedAction(verb: string): string {
-  // Map verb to past-tense action name used in the spec.
-  const map: Record<string, string> = {
-    read: "read",
-    extract: "extract",
-    claim: "extracted",
-    search: "called",
-    summarize: "compose",
-    summarise: "compose",
-    review: "completed",
-    spawn: "spawn",
-    call: "called",
-    send: "send",
-    message: "send",
-    email: "send",
-    write: "write",
-    generate: "generate",
-    fetch: "fetch",
-    analyze: "analyze",
-    classify: "classify",
-    notify: "notify",
-    approve: "requested",
-    reply: "send",
-    respond: "send",
-  };
-  return map[verb.toLowerCase()] ?? verb.toLowerCase();
-}
-
-function parseDSLOrMarkdown(text: string): {
-  reactions: ReactionIR[];
-  concepts: ConceptIR[];
-  warnings: CompilerWarning[];
-} {
-  const warnings: CompilerWarning[] = [];
-  const sentences = extractReactionSentences(text);
-  const reactions: ReactionIR[] = [];
-  const conceptMap = new Map<string, ConceptIR>();
-
-  function ensureConcept(name: string) {
-    if (KNOWN_KERNEL_CONCEPTS.has(name)) return;
-    if (!conceptMap.has(name)) {
-      conceptMap.set(name, {
-        name,
-        purpose: `Auto-derived concept ${name}.`,
-        actions: [],
-      });
-    }
-  }
-
-  // Heuristic: the very first reaction always starts on UserInput.received
-  // unless the prose explicitly mentions a different trigger.
-  let entryAssigned = false;
-
-  for (const sentence of sentences) {
-    const reactionId = uid("r");
-    const trigger = parseTrigger(sentence, !entryAssigned);
-    if (trigger.action.startsWith("UserInput")) entryAssigned = true;
-
-    const then: ThenActionIR[] = [];
-    let m: RegExpExecArray | null;
-    VERB_RE.lastIndex = 0;
-    while ((m = VERB_RE.exec(sentence))) {
-      const [, verb, rest] = m as unknown as [string, string, string];
-      // Skip the verb if it is the trigger verb (after "when X").
-      if (
-        new RegExp(`^when\\s+\\S+\\s+\\S*\\s*${verb}`, "i").test(sentence) &&
-        then.length === 0
-      ) continue;
-      const a = actionFromVerb(verb, rest);
-      then.push(a);
-      ensureConcept(a.action.split(".")[0] ?? "");
-    }
-
-    if (then.length === 0) {
-      // Fallback: ask the LLM/runtime to figure it out by emitting a generic
-      // generate request.
-      then.push({
-        posture: "request",
-        action: "Tooling.called",
-        args: { tool: "llm.generate", prompt: sentence },
-      });
-    }
-
-    reactions.push({
-      id: reactionId,
-      name: `R${reactions.length + 1}`,
-      prose: sentence,
-      formal: synthesizeFormal(trigger, then),
-      when: [trigger],
-      where: [],
-      then,
-    });
-    ensureConcept(trigger.action.split(".")[0] ?? "");
-  }
-
-  if (reactions.length === 0) {
-    // Whole behavior is just prose: create one catch-all reaction that
-    // delegates to the agentic loop. Building.act lets the runtime use the
-    // LLM, multiple tools, sub-agents, and self-modification to fulfil the
-    // request rather than emitting a single naive llm.generate call.
-    reactions.push({
+function createFallbackBCIR(text: string, format: BehaviorFormat): BCIR {
+  const reactions: ReactionIR[] = [
+    {
       id: uid("r"),
-      name: "R1",
-      prose: text.trim().slice(0, 500),
-      formal: "when UserInput.received do Building.act(goal: ?input)",
+      name: "HandleUserInput",
+      prose: "Handle the user's input according to the provided behavior.",
+      formal: "when UserInput.received(input: ?input) do request Building.act(goal: ?input)",
       when: [
         {
           bind: "?input",
@@ -322,99 +78,28 @@ function parseDSLOrMarkdown(text: string): {
           args: { goal: "?input" },
         },
       ],
-    });
-    ensureConcept("Building");
-    warnings.push({
-      level: "info",
-      message:
-        "No structured reactions detected. Defaulted to the agentic loop (Building.act).",
-    });
-  }
+    },
+  ];
 
-  return {
+  return withDefaultCapabilities({
+    schemaVersion: "bcir.v0",
+    agent: {
+      name: "Untitled Agent",
+      purpose: "Act on user requests according to the provided behavior.",
+    },
+    raw: { format, text },
+    concepts: [],
     reactions,
-    concepts: Array.from(conceptMap.values()),
-    warnings,
-  };
+    tools: collectTools(reactions),
+    permissions: collectPermissions(reactions),
+  });
 }
 
-function parseTrigger(
-  sentence: string,
-  defaultToUserInput: boolean
-): { bind?: string; action: string; args: Record<string, string> } {
-  // "When the paper draft is submitted, ..." -> Drafting.submitted
-  const m = sentence.match(
-    /^(?:when|after|if|on|whenever|once|for each)\s+([^,]+?)\s+(is|are|was|gets|has|completes|completed|finishes|finished)\s+([a-z]+)/i
-  );
-  if (m) {
-    const subject = (m[1] ?? "").trim();
-    const verb = (m[3] ?? "").trim().toLowerCase();
-    const conceptGuess = guessConceptFromSubject(subject);
-    return {
-      bind: "?event",
-      action: `${conceptGuess}.${normalisedAction(verb)}`,
-      args: { subject },
-    };
-  }
-  // "When user says ..." or "When asked ..."
-  if (/^(when|after|if|on)\s+(user|the user)\b/i.test(sentence)) {
-    return {
-      bind: "?input",
-      action: "UserInput.received",
-      args: { input: "?input" },
-    };
-  }
-  if (defaultToUserInput) {
-    return {
-      bind: "?input",
-      action: "UserInput.received",
-      args: { input: "?input" },
-    };
-  }
-  // Fallback
-  return {
-    action: "Event.observed",
-    args: { sentence },
-  };
-}
-
-function guessConceptFromSubject(subject: string): string {
-  const tokens = subject.toLowerCase().split(/\s+/);
-  for (const token of tokens) {
-    if (VERB_TO_CONCEPT[token]) return VERB_TO_CONCEPT[token];
-  }
-  // Pick the last noun-ish word and turn it into a gerund.
-  const last = tokens[tokens.length - 1] ?? "event";
-  return gerund(last);
-}
-
-function synthesizeFormal(
-  trigger: { action: string; args: Record<string, string> },
-  then: ThenActionIR[]
-): string {
-  const lhs = `${trigger.action}(${Object.entries(trigger.args)
-    .map(([k, v]) => `${k}: ${v}`)
-    .join(", ")})`;
-  const rhs = then
-    .map(
-      (a) =>
-        `${a.posture} ${a.action}(${Object.entries(a.args)
-          .map(([k, v]) => `${k}: ${v}`)
-          .join(", ")})`
-    )
-    .join("; ");
-  return `when ${lhs} do ${rhs}`;
-}
-
-// --- LLM-powered normalization ---
-
-const NORMALIZE_MODEL = "@cf/moonshotai/kimi-k2.6";
-
-function buildNormalizePrompt(rawText: string, draft: BCIR): string {
-  const draftSummary = {
-    agent: draft.agent,
-    concepts: draft.concepts,
-    reactions: draft.reactions.map((r) => ({
+function buildNormalizePrompt(rawText: string, fallback: BCIR): string {
+  const fallbackSummary = {
+    agent: fallback.agent,
+    concepts: fallback.concepts,
+    reactions: fallback.reactions.map((r) => ({
       id: r.id,
       name: r.name,
       prose: r.prose,
@@ -424,15 +109,10 @@ function buildNormalizePrompt(rawText: string, draft: BCIR): string {
     })),
   };
 
-  return `## Raw behavior text
-
-${rawText}
-
-## Deterministic parser draft
-
-${JSON.stringify(draftSummary, null, 2)}
-
-Produce an improved BCIR JSON. Fix generic names, add missing reactions, improve prose descriptions, and ensure correct action mappings. Keep the same structure if the draft is already good — only improve what needs improving.`;
+  return renderTemplate(NORMALIZE_USER_PROMPT, {
+    RAW_BEHAVIOR_TEXT: rawText,
+    FALLBACK_BCIR: JSON.stringify(fallbackSummary, null, 2),
+  });
 }
 
 function tryParseLLMResponse(text: string): {
@@ -440,12 +120,10 @@ function tryParseLLMResponse(text: string): {
   concepts?: ConceptIR[];
   reactions?: ReactionIR[];
 } | null {
-  // Extract JSON from the response (handle markdown fences)
   let json = text.trim();
   const fenced = json.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
   if (fenced) json = fenced[1]!.trim();
 
-  // Find the first { ... } block
   const start = json.indexOf("{");
   const end = json.lastIndexOf("}");
   if (start === -1 || end === -1) return null;
@@ -458,21 +136,62 @@ function tryParseLLMResponse(text: string): {
   }
 }
 
-function validateLLMReaction(r: unknown): r is ReactionIR {
-  if (!r || typeof r !== "object") return false;
-  const obj = r as Record<string, unknown>;
-  return (
-    typeof obj.name === "string" &&
-    typeof obj.prose === "string" &&
-    Array.isArray(obj.when) &&
-    obj.when.length > 0 &&
-    Array.isArray(obj.then) &&
-    obj.then.length > 0
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeArgs(value: unknown): Record<string, string> {
+  if (!isRecord(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => key.length > 0)
+      .map(([key, arg]) => [key, String(arg)])
   );
 }
 
+function hasValidTrigger(value: unknown): boolean {
+  return isRecord(value) && typeof value.action === "string";
+}
+
+function hasValidThenAction(value: unknown): boolean {
+  return isRecord(value) && typeof value.action === "string";
+}
+
+function validateLLMReaction(r: unknown): r is ReactionIR {
+  if (!isRecord(r)) return false;
+  return (
+    typeof r.name === "string" &&
+    typeof r.prose === "string" &&
+    Array.isArray(r.when) &&
+    r.when.length > 0 &&
+    r.when.every(hasValidTrigger) &&
+    Array.isArray(r.then) &&
+    r.then.length > 0 &&
+    r.then.every(hasValidThenAction)
+  );
+}
+
+function synthesizeFormal(r: ReactionIR): string {
+  const trigger = r.when[0] ?? {
+    action: "UserInput.received",
+    args: { input: "?input" },
+  };
+  const lhs = `${trigger.action}(${Object.entries(normalizeArgs(trigger.args))
+    .map(([k, v]) => `${k}: ${v}`)
+    .join(", ")})`;
+  const rhs = r.then
+    .map(
+      (a) =>
+        `${a.posture ?? "request"} ${a.action}(${Object.entries(a.args ?? {})
+          .map(([k, v]) => `${k}: ${v}`)
+          .join(", ")})`
+    )
+    .join("; ");
+  return `when ${lhs} do ${rhs}`;
+}
+
 function mergeLLMResult(
-  draft: BCIR,
+  fallback: BCIR,
   llmResult: {
     agent?: { name: string; purpose?: string };
     concepts?: ConceptIR[];
@@ -480,39 +199,35 @@ function mergeLLMResult(
   }
 ): BCIR {
   const agent = {
-    name: llmResult.agent?.name || draft.agent.name,
-    purpose: llmResult.agent?.purpose || draft.agent.purpose,
+    name: llmResult.agent?.name || fallback.agent.name,
+    purpose: llmResult.agent?.purpose || fallback.agent.purpose,
   };
 
-  let reactions = draft.reactions;
+  let reactions = fallback.reactions;
   if (llmResult.reactions && llmResult.reactions.length > 0) {
     const validated = llmResult.reactions.filter(validateLLMReaction);
     if (validated.length > 0) {
       reactions = validated.map((r, i) => ({
         id: r.id || uid("r"),
-        name: r.name || `R${i + 1}`,
+        name: r.name || `Reaction${i + 1}`,
         prose: r.prose,
-        formal:
-          r.formal ||
-          synthesizeFormal(
-            r.when[0] ?? {
-              action: "UserInput.received",
-              args: { input: "?input" },
-            },
-            r.then
-          ),
-        when: r.when,
+        formal: r.formal || synthesizeFormal(r),
+        when: r.when.map((w) => ({
+          bind: typeof w.bind === "string" ? w.bind : undefined,
+          action: w.action,
+          args: normalizeArgs(w.args),
+        })),
         where: r.where || [],
         then: r.then.map((t) => ({
           posture: t.posture || "request",
           action: t.action,
-          args: t.args || {},
+          args: normalizeArgs(t.args),
         })),
       }));
     }
   }
 
-  let concepts = draft.concepts;
+  let concepts = fallback.concepts;
   if (llmResult.concepts && llmResult.concepts.length > 0) {
     concepts = llmResult.concepts
       .filter(
@@ -529,7 +244,7 @@ function mergeLLMResult(
   }
 
   return {
-    ...draft,
+    ...fallback,
     agent,
     concepts,
     reactions,
@@ -538,18 +253,18 @@ function mergeLLMResult(
   };
 }
 
-async function polishWithLLM(
+async function parseWithLLM(
   env: { AI?: Ai },
-  draft: BCIR
+  fallback: BCIR
 ): Promise<{ bcir: BCIR; warnings: CompilerWarning[] }> {
   if (!env.AI) {
     return {
-      bcir: draft,
+      bcir: fallback,
       warnings: [
         {
-          level: "info",
+          level: "warn",
           message:
-            "No AI binding present; behavior was normalized by the deterministic parser only.",
+            "No AI binding present; using generic agentic-loop behavior.",
         },
       ],
     };
@@ -557,7 +272,7 @@ async function polishWithLLM(
 
   try {
     const workersai = createWorkersAI({ binding: env.AI as never });
-    const prompt = buildNormalizePrompt(draft.raw.text, draft);
+    const prompt = buildNormalizePrompt(fallback.raw.text, fallback);
     const { text } = await generateText({
       model: workersai(NORMALIZE_MODEL as never),
       system: NORMALIZE_SYSTEM_PROMPT,
@@ -567,41 +282,38 @@ async function polishWithLLM(
     const parsed = tryParseLLMResponse(text);
     if (!parsed) {
       return {
-        bcir: draft,
+        bcir: fallback,
         warnings: [
           {
             level: "warn",
             message:
-              "LLM normalization returned unparseable output; falling back to deterministic parse.",
+              "LLM normalization returned unparseable output; using generic agentic-loop behavior.",
           },
         ],
       };
     }
 
-    const merged = mergeLLMResult(draft, parsed);
     return {
-      bcir: merged,
+      bcir: mergeLLMResult(fallback, parsed),
       warnings: [
         {
           level: "info",
-          message: "Behavior was normalized with LLM assistance.",
+          message: "Behavior was normalized by the LLM parser.",
         },
       ],
     };
   } catch (e) {
     return {
-      bcir: draft,
+      bcir: fallback,
       warnings: [
         {
           level: "warn",
-          message: `LLM normalization failed (${e instanceof Error ? e.message : "unknown error"}); falling back to deterministic parse.`,
+          message: `LLM normalization failed (${e instanceof Error ? e.message : "unknown error"}); using generic agentic-loop behavior.`,
         },
       ],
     };
   }
 }
-
-// --- Public entry point ---
 
 export async function normalizeBehavior(
   env: { AI?: Ai },
@@ -610,42 +322,17 @@ export async function normalizeBehavior(
   const text = input.rawText;
   const format = detectFormat(text, input.rawFormat);
 
-  // 1. JSON BCIR
   const json = tryParseBCIR(text);
   if (json) {
     return { bcir: json, warnings: [] };
   }
 
-  // 2. Deterministic parser
-  const { reactions, concepts, warnings } = parseDSLOrMarkdown(text);
-  const name = extractAgentName(text) ?? "Untitled Agent";
-  const purpose = extractPurpose(text);
-
-  const tools = collectTools(reactions);
-  const draft = withDefaultCapabilities({
-    schemaVersion: "bcir.v0",
-    agent: { name, purpose },
-    raw: { format, text },
-    concepts,
-    reactions,
-    tools,
-    permissions: collectPermissions(reactions),
-  });
-
-  // 3. Optional LLM polish
-  const { bcir, warnings: polishWarnings } = await polishWithLLM(env, draft);
-
-  if (format === "unknown") {
-    warnings.push({
-      level: "warn",
-      message:
-        "Format could not be detected confidently. Review the parsed reactions before activating.",
-    });
-  }
+  const fallback = createFallbackBCIR(text, format);
+  const { bcir, warnings } = await parseWithLLM(env, fallback);
 
   return {
     bcir: withDefaultCapabilities(bcir),
-    warnings: [...warnings, ...polishWarnings],
+    warnings,
   };
 }
 

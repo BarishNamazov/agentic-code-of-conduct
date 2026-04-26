@@ -5,15 +5,23 @@ import { JsonViewer } from "./JsonViewer";
 export function Timeline({
   events,
   density = "comfortable",
+  agentNames,
 }: {
   events: TimelineEvent[];
   density?: "comfortable" | "compact";
+  agentNames?: Map<string, string>;
 }) {
   const idIndex = new Map(events.map((e) => [e.id, e]));
   return (
     <ol className={density === "compact" ? "space-y-0.5" : "space-y-1"}>
       {events.map((e) => (
-        <TimelineRow key={e.id} event={e} idIndex={idIndex} density={density} />
+        <TimelineRow
+          key={e.id}
+          event={e}
+          idIndex={idIndex}
+          density={density}
+          agentNames={agentNames}
+        />
       ))}
     </ol>
   );
@@ -23,11 +31,16 @@ function TimelineRow({
   event: e,
   idIndex,
   density,
+  agentNames,
 }: {
   event: TimelineEvent;
   idIndex: Map<string, TimelineEvent>;
   density: "comfortable" | "compact";
+  agentNames?: Map<string, string>;
 }) {
+  const actorName = agentNames?.get(e.actorAgentId) ?? e.actorAgentId;
+  const actorTooltip =
+    actorName === e.actorAgentId ? e.actorAgentId : `${actorName} · ${e.actorAgentId}`;
   const [open, setOpen] = useState(false);
   const cause = e.causedByActionId ? idIndex.get(e.causedByActionId) : null;
   const summary = summarizeArgs(e.args);
@@ -60,8 +73,11 @@ function TimelineRow({
         >
           {e.action}
         </span>
-        <span className="mono shrink-0 text-[11px] text-neutral-400">
-          {e.actorAgentId}
+        <span
+          className="mono shrink-0 text-[11px] text-neutral-400"
+          title={actorTooltip}
+        >
+          {actorName}
         </span>
         <span className="mono min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-neutral-300">
           {summary}
@@ -74,7 +90,15 @@ function TimelineRow({
         <div className="animate-fade-in border-t border-neutral-800/80 p-3 text-[11px]">
           <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
             <Field label="id" value={e.id} mono />
-            <Field label="actor" value={e.actorAgentId} mono />
+            <Field
+              label="actor"
+              value={
+                actorName !== e.actorAgentId
+                  ? `${actorName} (${e.actorAgentId})`
+                  : e.actorAgentId
+              }
+              mono
+            />
             {e.runId && <Field label="run" value={e.runId} mono />}
             {e.behaviorVersionId && (
               <Field label="behavior" value={e.behaviorVersionId} mono />

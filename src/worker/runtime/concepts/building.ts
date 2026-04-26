@@ -187,6 +187,31 @@ function buildAgenticSystemPrompt(
   goal: string,
   history: PlannerStep[]
 ): string {
+  return previewAgenticContext(bcir, userInput, goal, history).rendered;
+}
+
+export type AgenticContextParts = {
+  agentName: string;
+  agentPurpose: string;
+  reactions: string;
+  toolCatalog: string;
+  userInput: string;
+  goal: string;
+  history: string;
+  promptTemplate: string;
+  rendered: string;
+};
+
+// Returns the exact system prompt string sent to the LLM planner on the first
+// (and subsequent) agentic step, plus the structured pieces it was assembled
+// from. Used by the UI's Context Viewer so a developer can inspect what the
+// agent actually sees.
+export function previewAgenticContext(
+  bcir: BCIR,
+  userInput: string,
+  goal: string,
+  history: PlannerStep[] = []
+): AgenticContextParts {
   const agent = bcir.agent;
   const reactions = (bcir.reactions ?? [])
     .map((r) => `  • ${r.prose || r.name}`)
@@ -206,7 +231,7 @@ function buildAgenticSystemPrompt(
         .join("\n")
     : "(no steps yet)";
 
-  return renderTemplate(AGENTIC_PLANNER_PROMPT, {
+  const vars = {
     AGENT_NAME: agent?.name ?? "Agent",
     AGENT_PURPOSE: agent?.purpose ? `Your purpose: ${agent.purpose}` : "",
     REACTIONS: reactions ? `Your behavioral reactions:\n${reactions}` : "",
@@ -214,7 +239,19 @@ function buildAgenticSystemPrompt(
     USER_INPUT: truncate(userInput, 4000),
     GOAL: goal && goal !== userInput ? `\nGoal for this step: ${truncate(goal, 1000)}` : "",
     HISTORY: historyText,
-  });
+  };
+
+  return {
+    agentName: vars.AGENT_NAME,
+    agentPurpose: vars.AGENT_PURPOSE,
+    reactions: vars.REACTIONS,
+    toolCatalog: vars.TOOL_CATALOG,
+    userInput: vars.USER_INPUT,
+    goal: vars.GOAL,
+    history: vars.HISTORY,
+    promptTemplate: AGENTIC_PLANNER_PROMPT,
+    rendered: renderTemplate(AGENTIC_PLANNER_PROMPT, vars),
+  };
 }
 
 function parsePlannerResponse(raw: string): PlannerDecision | null {
