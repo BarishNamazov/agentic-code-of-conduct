@@ -14,8 +14,7 @@ deploys the result as a real independent cloud agent.
 
 ### CSAIL directory agent
 
-
-https://github.com/user-attachments/assets/0893e92c-620b-47d6-94aa-c70a4b3c1d03
+https://github.com/user-attachments/assets/baa4d340-6e18-46ba-9024-5a8f181a1050
 
 ### CSAIL 3D exploration
 
