@@ -25,7 +25,7 @@ only configuration changes.
 All endpoints are mounted under a single, versioned prefix:
 
 ```
-{BASE_URL}/api/v1/external
+https://behaving-agents.barish2003.workers.dev/api/v1/external
 ```
 
 For local development with `wrangler dev` the base URL is typically
