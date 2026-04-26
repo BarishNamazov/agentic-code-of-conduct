@@ -159,6 +159,71 @@ export type TimelineEvent = {
   createdAt: string;
 };
 
+export type ChatToolRecord = {
+  id: string;
+  tool: string;
+  input: unknown;
+  output?: unknown;
+  error?: string;
+  status: ToolStatus;
+  actorAgentId: string;
+  tokens: string;
+  startedAt: string;
+};
+
+export type ChatSpawnRecord = {
+  childAgentId: string;
+  childName: string;
+  parentAgentId: string;
+};
+
+export type ChatSubThreadRecord = {
+  agentId: string;
+  agentName: string;
+  text: string;
+};
+
+export type ChatAttachmentRecord = {
+  id: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  kind: "text" | "image" | "binary";
+  dataUrl?: string;
+  content?: string;
+};
+
+export type ChatAssistantRecord = {
+  runId: string | null;
+  status: "running" | "completed" | "failed";
+  text: string;
+  subThreads: ChatSubThreadRecord[];
+  events: TimelineEvent[];
+  tools: ChatToolRecord[];
+  spawned: ChatSpawnRecord[];
+  errors: string[];
+  toolActor: [string, string][];
+};
+
+export type ChatTurnRecord = {
+  id: string;
+  user: {
+    text: string;
+    createdAt: string;
+    attachments?: ChatAttachmentRecord[];
+  };
+  assistant: ChatAssistantRecord;
+};
+
+export type ChatSessionRecord = {
+  id: string;
+  agentId: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  turns: ChatTurnRecord[];
+};
+
 export type WorkspaceState = {
   agents: AgentSummary[];
   activeRuns: RunSummary[];

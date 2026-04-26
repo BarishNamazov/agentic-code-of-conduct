@@ -131,6 +131,7 @@ export function AgentDetailView({
         <ChatPanel
           rootAgent={detail.agent}
           allAgents={state.agents}
+          chatStore={agent.stub}
           onRun={onRun}
           onAfterRun={() => setRunVersion((v) => v + 1)}
         />

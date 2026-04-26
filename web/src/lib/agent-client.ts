@@ -5,6 +5,7 @@ import { useAgent } from "agents/react";
 import type {
   AgentDetail,
   BCIR,
+  ChatSessionRecord,
   CompileBehaviorInput,
   CompileBehaviorResult,
   CreateAgentInput,
@@ -40,6 +41,12 @@ export interface WorkspaceStub {
       completedAt: string | null;
     }[]
   >;
+  listChats(agentId: string): Promise<ChatSessionRecord[]>;
+  saveChatSession(session: ChatSessionRecord): Promise<void>;
+  deleteChatSession(
+    agentId: string,
+    sessionId: string
+  ): Promise<{ ok: boolean }>;
   deleteAgent(agentId: string): Promise<void>;
 
   // Files & handlers (UI façade over BehaviorAgent durable storage).

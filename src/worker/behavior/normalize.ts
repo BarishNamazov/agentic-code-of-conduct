@@ -407,7 +407,7 @@ function synthesizeFormal(
 
 // --- LLM-powered normalization ---
 
-const NORMALIZE_MODEL = "@cf/moonshotai/kimi-k2.6";
+const NORMALIZE_MODEL = "google/gemini-3-flash";
 
 const NORMALIZE_SYSTEM_PROMPT = `You are a behavior compiler. You convert natural-language agent descriptions into structured BCIR (Behavioral Code Intermediate Representation).
 

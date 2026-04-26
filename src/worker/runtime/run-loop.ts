@@ -11,7 +11,7 @@
 //   Running.completed → graph refresh.
 
 import type { ReactionIR, ThenActionIR } from "../../shared/types";
-import { selectEntryReactions } from "../behavior/validate";
+import { selectEntryReactionsLLM } from "../behavior/validate";
 import { record } from "./action-log";
 import { composeWithUserInput, resolveArgs } from "./binding";
 import { executeBuilding } from "./concepts/building";
@@ -53,7 +53,7 @@ export async function executeBehaviorRun(
   );
 
   const trigger = { action: "UserInput.received" };
-  const reactions = selectEntryReactions(bcir, trigger);
+  const reactions = await selectEntryReactionsLLM(bcir, trigger, userInput, env);
 
   const binding: RunBinding = { input: userInput, runId };
   const ctx: RunContext = { agentId, bcir, behaviorVersionId, runId };

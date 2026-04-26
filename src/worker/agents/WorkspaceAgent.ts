@@ -6,6 +6,10 @@ import type {
   AgentGraph,
   AgentSummary,
   BCIR,
+  ChatAssistantRecord,
+  ChatSessionRecord,
+  ChatToolRecord,
+  ChatTurnRecord,
   CompileBehaviorInput,
   CompileBehaviorResult,
   CreateAgentInput,
@@ -105,6 +109,25 @@ export class WorkspaceAgent extends Agent<Env, WorkspaceState> {
       started_at TEXT NOT NULL,
       completed_at TEXT
     )`;
+    this.sql`CREATE TABLE IF NOT EXISTS chat_sessions (
+      id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`;
+    this.sql`CREATE TABLE IF NOT EXISTS chat_turns (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      turn_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`;
+    this.sql`CREATE INDEX IF NOT EXISTS idx_chat_sessions_agent_updated
+      ON chat_sessions(agent_id, updated_at)`;
+    this.sql`CREATE INDEX IF NOT EXISTS idx_chat_turns_session_created
+      ON chat_turns(session_id, created_at)`;
 
     await this.refreshWorkspaceState();
   }
@@ -336,6 +359,81 @@ export class WorkspaceAgent extends Agent<Env, WorkspaceState> {
   }
 
   @callable()
+  async listChats(agentId: string): Promise<ChatSessionRecord[]> {
+    if (!this.findAgent(agentId)) return [];
+    const sessions = this.sql<{
+      id: string;
+      agent_id: string;
+      title: string;
+      created_at: string;
+      updated_at: string;
+    }>`SELECT id, agent_id, title, created_at, updated_at
+       FROM chat_sessions
+       WHERE agent_id = ${agentId}
+       ORDER BY updated_at DESC`;
+
+    if (sessions.length === 0) {
+      const runBacked = this.listRunBackedChats(agentId);
+      for (const session of runBacked) {
+        await this.saveChatSession(session);
+      }
+      return runBacked;
+    }
+
+    return sessions.map((s) => {
+      const turns = this.sql<{
+        turn_json: string;
+      }>`SELECT turn_json FROM chat_turns
+         WHERE session_id = ${s.id}
+         ORDER BY created_at ASC`;
+      return {
+        id: s.id,
+        agentId: s.agent_id,
+        title: s.title,
+        createdAt: s.created_at,
+        updatedAt: s.updated_at,
+        turns: turns
+          .map((t) => safeUnknown(t.turn_json))
+          .filter(isChatTurnRecord),
+      };
+    });
+  }
+
+  @callable()
+  async saveChatSession(session: ChatSessionRecord): Promise<void> {
+    if (!this.findAgent(session.agentId)) {
+      throw new Error(`Unknown agent ${session.agentId}`);
+    }
+    const now = new Date().toISOString();
+    this.sql`
+      INSERT INTO chat_sessions (id, agent_id, title, created_at, updated_at)
+      VALUES (${session.id}, ${session.agentId}, ${session.title},
+              ${session.createdAt || now}, ${session.updatedAt || now})
+      ON CONFLICT(id) DO UPDATE SET
+        agent_id = excluded.agent_id,
+        title = excluded.title,
+        updated_at = excluded.updated_at
+    `;
+    this.sql`DELETE FROM chat_turns WHERE session_id = ${session.id}`;
+    for (const turn of session.turns) {
+      this.sql`
+        INSERT INTO chat_turns
+          (id, session_id, agent_id, turn_json, created_at, updated_at)
+        VALUES (${turn.id}, ${session.id}, ${session.agentId},
+                ${JSON.stringify(turn)}, ${turn.user.createdAt || now},
+                ${session.updatedAt || now})
+      `;
+    }
+  }
+
+  @callable()
+  async deleteChatSession(agentId: string, sessionId: string): Promise<{ ok: boolean }> {
+    this.sql`DELETE FROM chat_turns WHERE agent_id = ${agentId} AND session_id = ${sessionId}`;
+    this.sql`DELETE FROM chat_sessions WHERE agent_id = ${agentId} AND id = ${sessionId}`;
+    return { ok: true };
+  }
+
+  @callable()
   async deleteAgent(agentId: string): Promise<void> {
     const agent = this.findAgent(agentId);
     if (!agent) return;
@@ -358,6 +456,8 @@ export class WorkspaceAgent extends Agent<Env, WorkspaceState> {
     this.sql`DELETE FROM spawn_edges WHERE parent_agent_id = ${agentId} OR child_agent_id = ${agentId}`;
     this.sql`DELETE FROM behavior_versions WHERE agent_id = ${agentId}`;
     this.sql`DELETE FROM run_sessions WHERE root_agent_id = ${agentId}`;
+    this.sql`DELETE FROM chat_turns WHERE agent_id = ${agentId}`;
+    this.sql`DELETE FROM chat_sessions WHERE agent_id = ${agentId}`;
     this.sql`DELETE FROM agents WHERE id = ${agentId} OR parent_agent_id = ${agentId}`;
     await this.refreshWorkspaceState();
   }
@@ -1166,6 +1266,96 @@ export class WorkspaceAgent extends Agent<Env, WorkspaceState> {
     }));
   }
 
+  private listRunBackedChats(agentId: string): ChatSessionRecord[] {
+    const runs = this.sql<{
+      id: string;
+      root_agent_id: string;
+      status: string;
+      input_text: string | null;
+      started_at: string;
+      completed_at: string | null;
+    }>`SELECT * FROM run_sessions WHERE root_agent_id = ${agentId}
+       ORDER BY started_at ASC LIMIT 100`;
+    if (runs.length === 0) return [];
+
+    const turns = runs.map((r): ChatTurnRecord => {
+      const events = this.sql<ActionLogRow>`
+        SELECT * FROM action_log WHERE run_id = ${r.id} ORDER BY created_at ASC
+      `.map(rowToTimeline);
+      const tools = this.sql<{
+        id: string;
+        actor_agent_id: string;
+        tool_name: string;
+        status: string;
+        input_json: string;
+        output_json: string | null;
+        error_text: string | null;
+        started_at: string | null;
+        completed_at: string | null;
+      }>`SELECT id, actor_agent_id, tool_name, status, input_json, output_json,
+                error_text, started_at, completed_at
+         FROM tool_calls WHERE run_id = ${r.id}
+         ORDER BY COALESCE(started_at, completed_at) ASC`;
+      const spawned = this.sql<{
+        child_agent_id: string;
+        child_name: string | null;
+        parent_agent_id: string;
+      }>`SELECT se.child_agent_id, a.name AS child_name, se.parent_agent_id
+         FROM spawn_edges se
+         LEFT JOIN agents a ON a.id = se.child_agent_id
+         WHERE se.run_id = ${r.id}
+         ORDER BY se.created_at ASC`.map((s) => ({
+        childAgentId: s.child_agent_id,
+        childName: s.child_name ?? s.child_agent_id,
+        parentAgentId: s.parent_agent_id,
+      }));
+      const chatTools: ChatToolRecord[] = tools.map((t) => {
+        const output = t.output_json ? safeUnknown(t.output_json) : undefined;
+        return {
+          id: t.id,
+          tool: t.tool_name,
+          input: safeUnknown(t.input_json),
+          output,
+          error: t.error_text ?? undefined,
+          status: t.status as ChatToolRecord["status"],
+          actorAgentId: t.actor_agent_id,
+          tokens: typeof output === "string" ? output : "",
+          startedAt: t.started_at ?? t.completed_at ?? r.started_at,
+        };
+      });
+      const assistant = buildAssistantFromRun(
+        r.id,
+        r.status,
+        agentId,
+        events,
+        chatTools,
+        spawned
+      );
+      return {
+        id: `turn_${r.id}`,
+        user: {
+          text: extractCurrentMessage(r.input_text ?? ""),
+          createdAt: r.started_at,
+        },
+        assistant,
+      };
+    });
+
+    return [
+      {
+        id: `runs_${agentId}`,
+        agentId,
+        title: "Run history",
+        createdAt: turns[0]?.user.createdAt ?? new Date().toISOString(),
+        updatedAt:
+          runs[runs.length - 1]?.completed_at ??
+          runs[runs.length - 1]?.started_at ??
+          new Date().toISOString(),
+        turns,
+      },
+    ];
+  }
+
   private findAgent(agentId: string): AgentSummary | null {
     const rows = this.sql<{
       id: string;
@@ -1283,6 +1473,108 @@ function safeJSON(text: string): Record<string, unknown> {
   } catch {
     return { raw: text };
   }
+}
+
+function safeUnknown(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+function isChatTurnRecord(value: unknown): value is ChatTurnRecord {
+  if (!value || typeof value !== "object") return false;
+  const turn = value as { id?: unknown; user?: unknown; assistant?: unknown };
+  return (
+    typeof turn.id === "string" &&
+    typeof turn.user === "object" &&
+    turn.user !== null &&
+    typeof turn.assistant === "object" &&
+    turn.assistant !== null
+  );
+}
+
+function extractCurrentMessage(inputText: string): string {
+  const marker = "\n[Current message]\n";
+  const idx = inputText.lastIndexOf(marker);
+  if (idx >= 0) return inputText.slice(idx + marker.length).trim();
+  return inputText.trim();
+}
+
+function buildAssistantFromRun(
+  runId: string,
+  runStatus: string,
+  rootAgentId: string,
+  events: TimelineEvent[],
+  tools: ChatToolRecord[],
+  spawned: ChatAssistantRecord["spawned"]
+): ChatAssistantRecord {
+  const rootText =
+    firstStringOutput(
+      tools.filter(
+        (t) => t.actorAgentId === rootAgentId && t.tool === "llm.generate"
+      )
+    ) ??
+    communicatingSentText(events, rootAgentId) ??
+    "";
+  const subThreadMap = new Map<string, ChatAssistantRecord["subThreads"][number]>();
+  for (const tool of tools) {
+    if (tool.actorAgentId === rootAgentId || tool.tool !== "llm.generate") continue;
+    const text = typeof tool.output === "string" ? tool.output : tool.tokens;
+    if (!text) continue;
+    const existing = subThreadMap.get(tool.actorAgentId);
+    const spawnedName =
+      spawned.find((s) => s.childAgentId === tool.actorAgentId)?.childName ??
+      tool.actorAgentId;
+    subThreadMap.set(tool.actorAgentId, {
+      agentId: tool.actorAgentId,
+      agentName: existing?.agentName ?? spawnedName,
+      text: (existing?.text ?? "") + text,
+    });
+  }
+
+  return {
+    runId,
+    status:
+      runStatus === "running"
+        ? "running"
+        : runStatus === "failed"
+          ? "failed"
+          : "completed",
+    text: rootText,
+    subThreads: Array.from(subThreadMap.values()),
+    events,
+    tools,
+    spawned,
+    errors: tools.flatMap((t) => (t.error ? [t.error] : [])),
+    toolActor: tools.map((t) => [t.id, t.actorAgentId]),
+  };
+}
+
+function firstStringOutput(tools: ChatToolRecord[]): string | null {
+  for (const tool of tools) {
+    if (typeof tool.output === "string" && tool.output.trim()) return tool.output;
+    if (tool.tokens.trim()) return tool.tokens;
+  }
+  return null;
+}
+
+function communicatingSentText(
+  events: TimelineEvent[],
+  rootAgentId: string
+): string | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i];
+    if (
+      event.actorAgentId === rootAgentId &&
+      event.action === "Communicating.sent" &&
+      typeof event.args.object === "string"
+    ) {
+      return event.args.object;
+    }
+  }
+  return null;
 }
 
 function jsonResp(

@@ -1,42 +1,24 @@
-import type { RunChunk, TimelineEvent } from "@shared/types";
+import type {
+  ChatAssistantRecord,
+  ChatAttachmentRecord,
+  ChatSessionRecord,
+  ChatSpawnRecord,
+  ChatSubThreadRecord,
+  ChatToolRecord,
+  ChatTurnRecord,
+  RunChunk,
+  TimelineEvent,
+} from "@shared/types";
 
 // A "turn" in the chat is one user prompt + one streamed assistant response
 // plus the side-effect trace produced while answering it.
-export type ToolRecord = {
-  id: string;
-  tool: string;
-  input: unknown;
-  output?: unknown;
-  error?: string;
-  status: "requested" | "running" | "completed" | "failed";
-  actorAgentId: string;
-  tokens: string;
-  startedAt: string;
-};
+export type ToolRecord = ChatToolRecord;
 
-export type SpawnRecord = {
-  childAgentId: string;
-  childName: string;
-  parentAgentId: string;
-};
+export type SpawnRecord = ChatSpawnRecord;
 
-export type SubThread = {
-  agentId: string;
-  agentName: string;
-  text: string;
-};
+export type SubThread = ChatSubThreadRecord;
 
-export type Attachment = {
-  id: string;
-  name: string;
-  mimeType: string;
-  size: number;
-  kind: "text" | "image" | "binary";
-  // For images: a dataURL we can render in the bubble.
-  dataUrl?: string;
-  // For text-like attachments: full UTF-8 contents (also forwarded to the model).
-  content?: string;
-};
+export type Attachment = ChatAttachmentRecord;
 
 export type AssistantTurn = {
   runId: string | null;
@@ -228,34 +210,11 @@ function renderUserMessageForPrompt(text: string, attachments?: Attachment[]): s
 
 // ----- Persistence -----------------------------------------------------------
 
-const STORAGE_PREFIX = "behave:chats:";
+type StoredAssistantTurn = ChatAssistantRecord;
 
-type StoredAssistantTurn = {
-  runId: string | null;
-  status: AssistantTurn["status"];
-  text: string;
-  subThreads: SubThread[];
-  events: TimelineEvent[];
-  tools: ToolRecord[];
-  spawned: SpawnRecord[];
-  errors: string[];
-  toolActor: [string, string][];
-};
+type StoredTurn = ChatTurnRecord;
 
-type StoredTurn = {
-  id: string;
-  user: ChatTurn["user"];
-  assistant: StoredAssistantTurn;
-};
-
-type StoredSession = {
-  id: string;
-  agentId: string;
-  title: string;
-  createdAt: string;
-  updatedAt: string;
-  turns: StoredTurn[];
-};
+type StoredSession = ChatSessionRecord;
 
 function serializeAssistant(t: AssistantTurn): StoredAssistantTurn {
   return {
@@ -277,21 +236,23 @@ function deserializeAssistant(s: StoredAssistantTurn): AssistantTurn {
       ? s.errors.length > 0
         ? "failed"
         : "completed"
-      : s.status;
+      : s.status === "failed"
+        ? "failed"
+        : "completed";
   return {
     runId: s.runId,
     status,
     text: s.text,
-    subThreads: new Map(s.subThreads.map((sub) => [sub.agentId, sub])),
-    events: s.events,
-    tools: new Map(s.tools.map((tr) => [tr.id, tr])),
-    spawned: s.spawned,
-    errors: s.errors,
-    toolActor: new Map(s.toolActor),
+    subThreads: new Map((s.subThreads ?? []).map((sub) => [sub.agentId, sub])),
+    events: s.events ?? [],
+    tools: new Map((s.tools ?? []).map((tr) => [tr.id, tr])),
+    spawned: s.spawned ?? [],
+    errors: s.errors ?? [],
+    toolActor: new Map(s.toolActor ?? []),
   };
 }
 
-function serializeSession(s: ChatSession): StoredSession {
+export function serializeChatSession(s: ChatSession): ChatSessionRecord {
   return {
     ...s,
     turns: s.turns.map((t) => ({
@@ -302,7 +263,7 @@ function serializeSession(s: ChatSession): StoredSession {
   };
 }
 
-function deserializeSession(s: StoredSession): ChatSession {
+export function deserializeChatSession(s: ChatSessionRecord): ChatSession {
   return {
     ...s,
     turns: s.turns.map((t) => ({
@@ -311,28 +272,6 @@ function deserializeSession(s: StoredSession): ChatSession {
       assistant: deserializeAssistant(t.assistant),
     })),
   };
-}
-
-export function loadChats(agentId: string): ChatSession[] {
-  if (typeof localStorage === "undefined") return [];
-  try {
-    const raw = localStorage.getItem(STORAGE_PREFIX + agentId);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as StoredSession[];
-    return parsed.map(deserializeSession);
-  } catch {
-    return [];
-  }
-}
-
-export function saveChats(agentId: string, sessions: ChatSession[]): void {
-  if (typeof localStorage === "undefined") return;
-  try {
-    const stored: StoredSession[] = sessions.map(serializeSession);
-    localStorage.setItem(STORAGE_PREFIX + agentId, JSON.stringify(stored));
-  } catch {
-    // Quota exceeded or similar — silently ignore; chat is best-effort persisted.
-  }
 }
 
 export function newChatSession(agentId: string): ChatSession {

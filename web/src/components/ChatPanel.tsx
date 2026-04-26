@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { AgentSummary, RunChunk } from "@shared/types";
+import type { AgentSummary, ChatSessionRecord, RunChunk } from "@shared/types";
 import {
   buildPromptWithHistory,
   deriveChatTitle,
+  deserializeChatSession,
   emptyAssistantTurn,
-  loadChats,
   newChatSession,
   reduceChunk,
-  saveChats,
+  serializeChatSession,
   type AssistantTurn,
   type Attachment,
   type ChatSession,
@@ -25,11 +25,20 @@ const IMAGE_ATTACHMENT_MAX_BYTES = 4 * 1024 * 1024;
 export function ChatPanel({
   rootAgent,
   allAgents,
+  chatStore,
   onRun,
   onAfterRun,
 }: {
   rootAgent: AgentSummary;
   allAgents: AgentSummary[];
+  chatStore: {
+    listChats(agentId: string): Promise<ChatSessionRecord[]>;
+    saveChatSession(session: ChatSessionRecord): Promise<void>;
+    deleteChatSession(
+      agentId: string,
+      sessionId: string
+    ): Promise<{ ok: boolean }>;
+  };
   onRun: (
     userInput: string,
     handlers: {
@@ -40,36 +49,79 @@ export function ChatPanel({
   ) => Promise<unknown>;
   onAfterRun?: () => void;
 }) {
-  const [sessions, setSessions] = useState<ChatSession[]>(() => loadChats(rootAgent.id));
-  const [activeId, setActiveId] = useState<string>(() => {
-    const existing = loadChats(rootAgent.id);
-    if (existing.length > 0) return existing[0].id;
-    const fresh = newChatSession(rootAgent.id);
-    saveChats(rootAgent.id, [fresh]);
-    return fresh.id;
-  });
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [activeId, setActiveId] = useState<string>("");
+  const [loaded, setLoaded] = useState(false);
   const [input, setInput] = useState("");
   const [pending, setPending] = useState<Attachment[]>([]);
   const [running, setRunning] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingSaveRef = useRef<{
+    agentId: string;
+    session: ChatSession;
+  } | null>(null);
+
+  const flushPendingSave = () => {
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+    const pendingSave = pendingSaveRef.current;
+    pendingSaveRef.current = null;
+    if (!pendingSave || pendingSave.session.turns.length === 0) return;
+    void chatStore
+      .saveChatSession(serializeChatSession(pendingSave.session))
+      .catch((e) => console.warn("chat save failed", e));
+  };
+
+  const scheduleSave = (session: ChatSession, immediate = false) => {
+    if (session.turns.length === 0) return;
+    pendingSaveRef.current = { agentId: rootAgent.id, session };
+    if (immediate) {
+      flushPendingSave();
+      return;
+    }
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(flushPendingSave, 500);
+  };
 
   // Reload sessions when navigating to a different agent.
   useEffect(() => {
-    const loaded = loadChats(rootAgent.id);
-    if (loaded.length === 0) {
-      const fresh = newChatSession(rootAgent.id);
-      saveChats(rootAgent.id, [fresh]);
-      setSessions([fresh]);
-      setActiveId(fresh.id);
-    } else {
-      setSessions(loaded);
-      setActiveId(loaded[0].id);
-    }
+    flushPendingSave();
+    let cancelled = false;
+    setLoaded(false);
+    setSessions([]);
+    setActiveId("");
     setInput("");
     setPending([]);
     setHistoryOpen(false);
+    chatStore
+      .listChats(rootAgent.id)
+      .then((records) => {
+        if (cancelled) return;
+        const next =
+          records.length > 0
+            ? records.map(deserializeChatSession)
+            : [newChatSession(rootAgent.id)];
+        setSessions(next);
+        setActiveId(next[0]?.id ?? "");
+        setLoaded(true);
+      })
+      .catch((e) => {
+        console.warn("chat load failed", e);
+        if (cancelled) return;
+        const fresh = newChatSession(rootAgent.id);
+        setSessions([fresh]);
+        setActiveId(fresh.id);
+        setLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+      flushPendingSave();
+    };
   }, [rootAgent.id]);
 
   // Make sure we always have an active session.
@@ -97,15 +149,15 @@ export function ChatPanel({
     el.scrollTop = el.scrollHeight;
   }, [turns]);
 
-  const persist = (next: ChatSession[]) => {
-    setSessions(next);
-    saveChats(rootAgent.id, next);
-  };
-
   const updateActiveSession = (mut: (s: ChatSession) => ChatSession) => {
     setSessions((prev) => {
-      const next = prev.map((s) => (s.id === activeId ? mut(s) : s));
-      saveChats(rootAgent.id, next);
+      let updated: ChatSession | null = null;
+      const next = prev.map((s) => {
+        if (s.id !== activeId) return s;
+        updated = mut(s);
+        return updated;
+      });
+      if (updated) scheduleSave(updated);
       return next;
     });
   };
@@ -113,10 +165,14 @@ export function ChatPanel({
   const newChat = () => {
     if (running) return;
     // Drop empty existing chats so we don't leak placeholders.
+    const empty = sessions.filter((s) => s.turns.length === 0);
+    for (const s of empty) {
+      void chatStore.deleteChatSession(rootAgent.id, s.id).catch(() => {});
+    }
     const cleaned = sessions.filter((s) => s.turns.length > 0);
     const fresh = newChatSession(rootAgent.id);
     const next = [fresh, ...cleaned];
-    persist(next);
+    setSessions(next);
     setActiveId(fresh.id);
     setInput("");
     setPending([]);
@@ -131,13 +187,16 @@ export function ChatPanel({
 
   const deleteSession = (id: string) => {
     if (running) return;
+    void chatStore.deleteChatSession(rootAgent.id, id).catch((e) => {
+      console.warn("chat delete failed", e);
+    });
     const remaining = sessions.filter((s) => s.id !== id);
     if (remaining.length === 0) {
       const fresh = newChatSession(rootAgent.id);
-      persist([fresh]);
+      setSessions([fresh]);
       setActiveId(fresh.id);
     } else {
-      persist(remaining);
+      setSessions(remaining);
       if (id === activeId) setActiveId(remaining[0].id);
     }
   };
@@ -162,6 +221,7 @@ export function ChatPanel({
     setPending((prev) => prev.filter((a) => a.id !== id));
 
   const start = async () => {
+    if (!activeSession) return;
     const text = input.trim();
     if ((!text && pending.length === 0) || running) return;
     setRunning(true);
@@ -220,6 +280,7 @@ export function ChatPanel({
         updateAssistant(reduceChunk(assistant, final, rootAgent.id, agentNames));
       }
     } finally {
+      flushPendingSave();
       setRunning(false);
       onAfterRun?.();
     }
@@ -228,6 +289,14 @@ export function ChatPanel({
   const sortedSessions = [...sessions].sort((a, b) =>
     b.updatedAt.localeCompare(a.updatedAt)
   );
+
+  if (!loaded) {
+    return (
+      <section className="relative flex h-[72vh] min-h-[520px] items-center justify-center overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900/40 text-sm text-neutral-500">
+        Loading chat history…
+      </section>
+    );
+  }
 
   return (
     <section className="relative flex h-[72vh] min-h-[520px] flex-col overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900/40">

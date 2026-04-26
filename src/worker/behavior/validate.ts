@@ -5,6 +5,7 @@ import type {
   ReactionIR,
   ValidationResult,
 } from "../../shared/types";
+import { generatePlannerText, type ToolEnv } from "../runtime/tools";
 
 export function validateBehavior(bcir: BCIR): ValidationResult {
   const errors: CompilerWarning[] = [];
@@ -114,4 +115,146 @@ export function selectEntryReactions(
   // If nothing matches, fire the first reaction (heuristic for free-form behavior).
   const first = bcir.reactions[0];
   return first ? [first] : [];
+}
+
+// Synthetic catch-all reaction that delegates to the agentic loop. Used when
+// the LLM dispatcher decides none of the declared reactions are a good fit
+// for the current user input — the agent then behaves ad-hoc.
+const ADHOC_REACTION_ID = "r_adhoc_building_act";
+function adhocBuildingActReaction(): ReactionIR {
+  return {
+    id: ADHOC_REACTION_ID,
+    name: "Adhoc",
+    prose:
+      "No declared reaction matched the user's input. Fall back to the agentic loop and act dynamically.",
+    formal: "when UserInput.received do request Building.act(goal: ?input)",
+    when: [
+      {
+        bind: "?input",
+        action: "UserInput.received",
+        args: { input: "?input" },
+      },
+    ],
+    where: [],
+    then: [
+      {
+        posture: "request",
+        action: "Building.act",
+        args: { goal: "?input" },
+      },
+    ],
+  };
+}
+
+// LLM-assisted version of `selectEntryReactions`. For UserInput-style triggers
+// we ask the model which (if any) of the declared reactions are relevant to
+// the actual user input. Reactions clearly unrelated to the input are dropped;
+// if nothing is relevant we synthesise a single Building.act fallback so the
+// agent can still respond ad-hoc.
+//
+// This is the runtime equivalent of:
+//   when UserInput.received(?input)
+//   do request Reactions.reactWithRelevantReaction(?input)
+export async function selectEntryReactionsLLM(
+  bcir: BCIR,
+  trigger: { action: string },
+  userInput: string,
+  env: ToolEnv
+): Promise<ReactionIR[]> {
+  const candidates = selectEntryReactions(bcir, trigger);
+  if (candidates.length === 0) return [adhocBuildingActReaction()];
+
+  const input = (userInput ?? "").trim();
+  // Without a real user message there's nothing to match against; preserve
+  // the legacy behavior of firing every candidate.
+  if (!input) return candidates;
+
+  const picked = await pickRelevantReactionIds(candidates, input, env);
+  if (picked === null) {
+    // LLM unavailable or unparseable — fail safe to legacy behavior.
+    return candidates;
+  }
+
+  if (picked.length === 0) return [adhocBuildingActReaction()];
+
+  const byId = new Map(candidates.map((r) => [r.id, r]));
+  const selected: ReactionIR[] = [];
+  for (const id of picked) {
+    const r = byId.get(id);
+    if (r && !selected.includes(r)) selected.push(r);
+  }
+  return selected.length > 0 ? selected : [adhocBuildingActReaction()];
+}
+
+async function pickRelevantReactionIds(
+  candidates: ReactionIR[],
+  userInput: string,
+  env: ToolEnv
+): Promise<string[] | null> {
+  if (!env.AI) return null;
+
+  const summary = candidates
+    .map((r, i) => {
+      const prose = (r.prose || "").trim().replace(/\s+/g, " ").slice(0, 240);
+      const formal = (r.formal || "").trim().replace(/\s+/g, " ").slice(0, 240);
+      return `${i + 1}. id=${r.id} | name=${r.name}\n   prose: ${prose}\n   formal: ${formal}`;
+    })
+    .join("\n");
+
+  const prompt = [
+    `You are routing a user message to the most relevant reaction(s) of a behavioral agent.`,
+    `Each reaction has an id, a prose description, and a formal "when ... do ..." rule.`,
+    `Pick the reactions whose trigger/intent clearly matches the user's message.`,
+    `Skip reactions that are clearly irrelevant. If NONE are clearly relevant, return an empty list — the agent will act ad-hoc.`,
+    ``,
+    `User message:`,
+    userInput.slice(0, 2000),
+    ``,
+    `Reactions:`,
+    summary,
+    ``,
+    `Respond with ONLY a JSON object of the form {"ids": ["<reaction id>", ...]}. No prose, no code fences.`,
+  ].join("\n");
+
+  const { text, error } = await generatePlannerText(env, prompt);
+  if (error) return null;
+  return parseReactionIds(text, candidates);
+}
+
+function parseReactionIds(
+  text: string,
+  candidates: ReactionIR[]
+): string[] | null {
+  if (!text) return null;
+  const validIds = new Set(candidates.map((r) => r.id));
+  // Strip code fences if the model added them despite instructions.
+  const stripped = text
+    .replace(/^\s*```(?:json)?/i, "")
+    .replace(/```\s*$/i, "")
+    .trim();
+  // Try strict JSON object first, then any embedded JSON object/array.
+  const candidatesJson: string[] = [];
+  candidatesJson.push(stripped);
+  const objMatch = stripped.match(/\{[\s\S]*\}/);
+  if (objMatch) candidatesJson.push(objMatch[0]);
+  const arrMatch = stripped.match(/\[[\s\S]*\]/);
+  if (arrMatch) candidatesJson.push(arrMatch[0]);
+
+  for (const raw of candidatesJson) {
+    try {
+      const parsed = JSON.parse(raw);
+      const ids: unknown = Array.isArray(parsed)
+        ? parsed
+        : (parsed as { ids?: unknown })?.ids;
+      if (!Array.isArray(ids)) continue;
+      const filtered = ids.filter(
+        (x): x is string => typeof x === "string" && validIds.has(x)
+      );
+      // Empty array is a meaningful signal ("nothing relevant") — return it.
+      return filtered;
+    } catch {
+      // try next candidate
+    }
+  }
+  return null;
 }
