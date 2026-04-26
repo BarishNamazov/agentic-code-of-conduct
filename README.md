@@ -12,9 +12,17 @@ deploys the result as a real independent cloud agent.
 
 ## Demo
 
-- [CSAIL directory agent](https://raw.githubusercontent.com/BarishNamazov/agentic-code-of-conduct/main/videos/csail_directory_agent.mp4)
-- [CSAIL 3D exploration](https://raw.githubusercontent.com/BarishNamazov/agentic-code-of-conduct/main/videos/csail-3d.mp4)
-- [Culture agent](https://raw.githubusercontent.com/BarishNamazov/agentic-code-of-conduct/main/videos/culture.mov)
+### CSAIL directory agent
+
+[![CSAIL directory agent demo preview](videos/previews/csail_directory_agent.gif)](videos/csail_directory_agent.mp4)
+
+### CSAIL 3D exploration
+
+[![CSAIL 3D exploration demo preview](videos/previews/csail-3d.gif)](videos/csail-3d.mp4)
+
+### Culture agent
+
+[![Culture agent demo preview](videos/previews/culture.gif)](videos/culture.mov)
 
 ## How it works
 
