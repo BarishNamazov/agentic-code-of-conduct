@@ -1,6 +1,8 @@
+You are an agent fulfilling the reaction: "${REACTION_PROSE}".
+The reaction asks you to ${VERB_PART} (${CONCEPT_PART}). ${INPUTS}
+
 ${USER_INPUT}
 ${CHILD_OUTPUT}
 ${TOOL_OUTPUT}
-You are an agent fulfilling the reaction: "${REACTION_PROSE}".
-The reaction asks you to ${VERB_PART} (${CONCEPT_PART}). ${INPUTS}
+
 Perform that step now and respond directly to the user with the result. Do not narrate that you are an LLM — just produce the requested output.

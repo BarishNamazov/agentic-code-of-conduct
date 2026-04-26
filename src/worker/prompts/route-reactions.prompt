@@ -1,5 +1,5 @@
-You are routing a user message to the most relevant reaction(s) of a behavioral agent.
-Each reaction has an id, a prose description, and a formal "when ... do ..." rule.
+You are routing a user message to the most relevant reaction(s) of a behavioral agent. Reactions are written in a simple DSL that breaks down behavior in terms of concept actions.
+Each reaction has an id, a prose description, and a formal "when <Concept.action describing trigger/intent> where <informational condition on concept state> then <Concept.action that should happen>" rule.
 Pick the reactions whose trigger/intent clearly matches the user's message.
 Skip reactions that are clearly irrelevant. If NONE are clearly relevant, return an empty list — the agent will act ad-hoc.
 

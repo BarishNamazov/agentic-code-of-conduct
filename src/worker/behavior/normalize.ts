@@ -62,7 +62,7 @@ function createFallbackBCIR(text: string, format: BehaviorFormat): BCIR {
       id: uid("r"),
       name: "HandleUserInput",
       prose: "Handle the user's input according to the provided behavior.",
-      formal: "when UserInput.received(input: ?input) do request Building.act(goal: ?input)",
+      formal: "when UserInput.received(input: ?input) then request Building.act(goal: ?input)",
       when: [
         {
           bind: "?input",
@@ -187,7 +187,7 @@ function synthesizeFormal(r: ReactionIR): string {
           .join(", ")})`
     )
     .join("; ");
-  return `when ${lhs} do ${rhs}`;
+  return `when ${lhs} then ${rhs}`;
 }
 
 function mergeLLMResult(

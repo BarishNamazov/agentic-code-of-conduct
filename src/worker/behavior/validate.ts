@@ -129,7 +129,7 @@ function adhocBuildingActReaction(): ReactionIR {
     name: "Adhoc",
     prose:
       "No declared reaction matched the user's input. Fall back to the agentic loop and act dynamically.",
-    formal: "when UserInput.received do request Building.act(goal: ?input)",
+    formal: "when UserInput.received then request Building.act(goal: ?input)",
     when: [
       {
         bind: "?input",
@@ -156,7 +156,7 @@ function adhocBuildingActReaction(): ReactionIR {
 //
 // This is the runtime equivalent of:
 //   when UserInput.received(?input)
-//   do request Reactions.reactWithRelevantReaction(?input)
+//   then request Reactions.reactWithRelevantReaction(?input)
 export async function selectEntryReactionsLLM(
   bcir: BCIR,
   trigger: { action: string },
@@ -204,7 +204,7 @@ async function pickRelevantReactionIds(
     .join("\n");
 
   const prompt = renderTemplate(ROUTE_REACTIONS_PROMPT, {
-    USER_MESSAGE: userInput.slice(0, 2000),
+    USER_MESSAGE: userInput,
     REACTIONS: summary,
   });
 
