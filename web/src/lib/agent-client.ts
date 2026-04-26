@@ -53,7 +53,7 @@ export type WorkspaceAgentClient = ReturnType<typeof useAgent<WorkspaceState>> &
       onDone?: (final: { type: "done"; runId: string }) => void;
       onError?: (error: string) => void;
     }
-  ): Promise<void>;
+  ): Promise<unknown>;
 };
 
 const WORKSPACE_NAME = "default";

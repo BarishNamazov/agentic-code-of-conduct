@@ -224,9 +224,16 @@ async function executeThenLine(
   );
 
   if (line.action === "Tooling.called") {
+    const toolName = String(args.tool ?? "llm.generate");
+    const enriched = { ...args };
+    if (toolName === "llm.generate") {
+      const userInput = typeof binding.input === "string" ? binding.input : "";
+      const existing = typeof enriched.prompt === "string" ? enriched.prompt : "";
+      enriched.prompt = composeWithUserInput(existing || `Respond to the user.`, userInput);
+    }
     await runTool(
-      String(args.tool ?? "llm.generate"),
-      args,
+      toolName,
+      enriched,
       requestAction.id,
       ctx,
       hooks,
@@ -260,11 +267,24 @@ async function executeThenLine(
     return;
   }
 
-  // Fallback: ask the LLM to satisfy the request.
+  // Fallback: ask the LLM to satisfy the request. Always include the original
+  // user message — the parsed arguments alone (e.g. "it into 3 bullet points")
+  // are missing the antecedent, so without `binding.input` the model has no
+  // context to answer with.
+  const userInput = typeof binding.input === "string" ? binding.input : "";
   const prompt =
     typeof args.prompt === "string"
-      ? args.prompt
-      : `Reaction "${reaction.prose}" requested ${line.action}. Inputs: ${JSON.stringify(args)}.`;
+      ? composeWithUserInput(args.prompt, userInput)
+      : [
+          userInput ? `User message:\n${userInput}\n` : "",
+          `The agent's behavior fired the reaction "${reaction.prose.trim()}".`,
+          `It now needs to satisfy the request \`${line.action}\` with arguments ${JSON.stringify(
+            args
+          )}.`,
+          `Respond directly to the user, addressing the user message above according to the reaction's intent.`,
+        ]
+          .filter(Boolean)
+          .join("\n");
   await runTool(
     "llm.generate",
     { prompt, ...args },
@@ -275,6 +295,14 @@ async function executeThenLine(
     envForTools,
     binding
   );
+}
+
+// If the reaction author wrote an explicit `prompt` arg, respect it but still
+// surface the user's message so the LLM sees the full conversation context.
+function composeWithUserInput(prompt: string, userInput: string): string {
+  if (!userInput) return prompt;
+  if (prompt.includes(userInput)) return prompt;
+  return `User message:\n${userInput}\n\n${prompt}`;
 }
 
 async function runTool(

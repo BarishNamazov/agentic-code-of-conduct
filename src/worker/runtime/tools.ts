@@ -35,7 +35,7 @@ export type ToolHostQueries = {
   searchMemory(query: string): unknown[];
 };
 
-const DEFAULT_MODEL = "@cf/meta/llama-3.1-8b-instruct";
+const DEFAULT_MODEL = "@cf/moonshotai/kimi-k2.6";
 
 const llmGenerate: ToolDefinition = {
   name: "llm.generate",
