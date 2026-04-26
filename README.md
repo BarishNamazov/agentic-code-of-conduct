@@ -120,3 +120,31 @@ same origin over WebSocket via `useAgent("WorkspaceAgent")`.
 
 These slot in cleanly because every interaction already flows through the
 workspace's append-only action log.
+
+## External agentic API
+
+This workspace also exposes itself as a generic agentic platform under
+`/api/v1/external/*`, intended for a separate frontend. See
+[`docs/api.md`](docs/api.md) for the full integration contract. Auth is a
+single bearer token loaded from `EXTERNAL_API_KEY` (set in `.dev.vars`
+locally — see `.dev.vars.example` — or via
+`wrangler secret put EXTERNAL_API_KEY` in production).
+
+Endpoints (all require `Authorization: Bearer $EXTERNAL_API_KEY`):
+
+| Method | Path                                | Purpose                                |
+| ------ | ----------------------------------- | -------------------------------------- |
+| GET    | `/api/v1/external/agents?query=`    | List top-level agents.                 |
+| GET    | `/api/v1/external/agents/{id}`      | Agent detail.                          |
+| POST   | `/api/v1/external/agents/{id}/chat` | SSE chat stream (`AgentEvent` frames). |
+
+Per-agent reference documents are uploaded *inside the workspace UI* and
+read by agents via internal tools (`knowledge.search` / `knowledge.list`
+/ `knowledge.read`); they are deliberately not exposed on the external
+API. The shared system prompt teaches every agent two complementary
+referral mechanisms: a declarative
+`<concept_call concept="Referring" action="referred">{...}</concept_call>`
+tag (logged as a `Referring.referred` workspace action and stripped from
+the user-visible text) and an optional clickable
+`[Display](agent://<agent-id>?label=...)` Markdown link beside it.
+*No entity-specific behavior is hardcoded into the platform.*

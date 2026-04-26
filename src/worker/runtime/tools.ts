@@ -58,6 +58,17 @@ export type ToolHostQueries = {
     spec: unknown;
   }): Promise<unknown>;
   listAgentHandlers?(input: { actorAgentId: string }): Promise<unknown>;
+  // Per-agent uploaded knowledge corpus.
+  searchAgentDocuments?(input: {
+    actorAgentId: string;
+    query: string;
+    limit?: number;
+  }): Promise<unknown>;
+  listAgentDocuments?(input: { actorAgentId: string }): Promise<unknown>;
+  readAgentDocument?(input: {
+    actorAgentId: string;
+    id: string;
+  }): Promise<unknown>;
   // Workspace introspection / orchestration so the agentic loop can
   // discover and reuse other agents.
   listAgents?(): Promise<
@@ -530,6 +541,68 @@ const agentCommunicate: ToolDefinition = {
   },
 };
 
+const knowledgeSearch: ToolDefinition = {
+  name: "knowledge.search",
+  description:
+    "Search the documents the user has uploaded to THIS agent. Returns ranked hits with " +
+    "title, tags, and a content snippet. Use this whenever the user's request might be " +
+    "grounded in their uploaded data.",
+  usage: `input: { "query": "search terms", "limit": 8 }`,
+  async run(_env, input, ctx) {
+    if (!ctx.actorAgentId || !ctx.host.searchAgentDocuments) {
+      return { error: "knowledge.search is unavailable in this context." };
+    }
+    const query = String(input.query ?? "").trim();
+    if (!query) return { error: "Missing 'query'." };
+    const limit = typeof input.limit === "number" ? input.limit : undefined;
+    const hits = await ctx.host.searchAgentDocuments({
+      actorAgentId: ctx.actorAgentId,
+      query,
+      limit,
+    });
+    return { output: hits };
+  },
+};
+
+const knowledgeList: ToolDefinition = {
+  name: "knowledge.list",
+  description:
+    "List the documents the user has uploaded to THIS agent (id, title, tags, size). " +
+    "Use this to discover what corpus you have available before searching.",
+  usage: `input: {}`,
+  async run(_env, _input, ctx) {
+    if (!ctx.actorAgentId || !ctx.host.listAgentDocuments) {
+      return { error: "knowledge.list is unavailable in this context." };
+    }
+    return {
+      output: await ctx.host.listAgentDocuments({
+        actorAgentId: ctx.actorAgentId,
+      }),
+    };
+  },
+};
+
+const knowledgeRead: ToolDefinition = {
+  name: "knowledge.read",
+  description:
+    "Read the full content of a single uploaded document by id. Prefer knowledge.search " +
+    "first; only call this when you need the entire document body.",
+  usage: `input: { "id": "doc id from knowledge.list / knowledge.search" }`,
+  async run(_env, input, ctx) {
+    if (!ctx.actorAgentId || !ctx.host.readAgentDocument) {
+      return { error: "knowledge.read is unavailable in this context." };
+    }
+    const id = String(input.id ?? "").trim();
+    if (!id) return { error: "Missing 'id'." };
+    return {
+      output: await ctx.host.readAgentDocument({
+        actorAgentId: ctx.actorAgentId,
+        id,
+      }),
+    };
+  },
+};
+
 export const TOOL_REGISTRY: Record<string, ToolDefinition> = {
   [llmGenerate.name]: llmGenerate,
   [memorySearch.name]: memorySearch,
@@ -546,6 +619,9 @@ export const TOOL_REGISTRY: Record<string, ToolDefinition> = {
   [agentSpawn.name]: agentSpawn,
   [agentUpdateBehavior.name]: agentUpdateBehavior,
   [agentCommunicate.name]: agentCommunicate,
+  [knowledgeSearch.name]: knowledgeSearch,
+  [knowledgeList.name]: knowledgeList,
+  [knowledgeRead.name]: knowledgeRead,
 };
 
 export function listAvailableTools() {

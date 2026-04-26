@@ -83,6 +83,21 @@ export class BehaviorAgent extends Agent<Env, BehaviorAgentState> {
     )`;
     this.sql`CREATE INDEX IF NOT EXISTS idx_local_handlers_method_path
       ON local_handlers(method, path)`;
+    // Documents: unnormalized blobs uploaded by the user that the agent can
+    // search over via the `knowledge.*` tools. Independent of `local_files`,
+    // which are addressable artifacts the agent itself produces.
+    this.sql`CREATE TABLE IF NOT EXISTS local_documents (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      mime_type TEXT NOT NULL,
+      tags_json TEXT NOT NULL,
+      content_text TEXT NOT NULL,
+      size INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`;
+    this.sql`CREATE INDEX IF NOT EXISTS idx_local_documents_created
+      ON local_documents(created_at)`;
   }
 
   // Install (or replace) the behavior this agent runs.
@@ -183,6 +198,7 @@ export class BehaviorAgent extends Agent<Env, BehaviorAgentState> {
     this.ensureSchema();
     this.sql`DELETE FROM local_handlers`;
     this.sql`DELETE FROM local_files`;
+    this.sql`DELETE FROM local_documents`;
     this.sql`DELETE FROM local_actions`;
     this.sql`DELETE FROM local_behavior`;
     this.ensureName();
@@ -359,6 +375,177 @@ export class BehaviorAgent extends Agent<Env, BehaviorAgentState> {
 
   // Find a matching handler for (method, path). Path matching is exact or
   // prefix (handler.path ends with "/*"). Returns the most specific match.
+  // ---------- Documents (uploaded knowledge) ----------
+
+  async addDocument(input: {
+    id?: string;
+    title: string;
+    content: string;
+    mimeType?: string;
+    tags?: string[];
+  }): Promise<LocalDocumentMeta> {
+    this.ensureSchema();
+    const id = input.id?.trim() || `doc_${crypto.randomUUID().slice(0, 8)}`;
+    const title = input.title.trim() || id;
+    const mime = (input.mimeType || "text/plain").trim();
+    const tags = Array.isArray(input.tags) ? input.tags.map(String) : [];
+    const size = byteLength(input.content);
+    const now = new Date().toISOString();
+    const existing = this.sql<{
+      created_at: string;
+    }>`SELECT created_at FROM local_documents WHERE id = ${id}`[0];
+    if (existing) {
+      this.sql`
+        UPDATE local_documents
+        SET title = ${title}, mime_type = ${mime},
+            tags_json = ${JSON.stringify(tags)},
+            content_text = ${input.content}, size = ${size},
+            updated_at = ${now}
+        WHERE id = ${id}
+      `;
+    } else {
+      this.sql`
+        INSERT INTO local_documents
+          (id, title, mime_type, tags_json, content_text, size, created_at, updated_at)
+        VALUES (${id}, ${title}, ${mime}, ${JSON.stringify(tags)},
+                ${input.content}, ${size}, ${now}, ${now})
+      `;
+    }
+    return {
+      id,
+      title,
+      mimeType: mime,
+      tags,
+      size,
+      createdAt: existing?.created_at ?? now,
+      updatedAt: now,
+    };
+  }
+
+  async listDocuments(): Promise<LocalDocumentMeta[]> {
+    this.ensureSchema();
+    const rows = this.sql<{
+      id: string;
+      title: string;
+      mime_type: string;
+      tags_json: string;
+      size: number;
+      created_at: string;
+      updated_at: string;
+    }>`SELECT id, title, mime_type, tags_json, size, created_at, updated_at
+       FROM local_documents ORDER BY updated_at DESC`;
+    return rows.map((r) => ({
+      id: r.id,
+      title: r.title,
+      mimeType: r.mime_type,
+      tags: safeStringArray(r.tags_json),
+      size: r.size,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+    }));
+  }
+
+  async getDocument(id: string): Promise<{
+    id: string;
+    title: string;
+    mimeType: string;
+    tags: string[];
+    content: string;
+    size: number;
+    createdAt: string;
+    updatedAt: string;
+  } | null> {
+    this.ensureSchema();
+    const rows = this.sql<{
+      id: string;
+      title: string;
+      mime_type: string;
+      tags_json: string;
+      content_text: string;
+      size: number;
+      created_at: string;
+      updated_at: string;
+    }>`SELECT id, title, mime_type, tags_json, content_text, size,
+              created_at, updated_at
+       FROM local_documents WHERE id = ${id}`;
+    const r = rows[0];
+    if (!r) return null;
+    return {
+      id: r.id,
+      title: r.title,
+      mimeType: r.mime_type,
+      tags: safeStringArray(r.tags_json),
+      content: r.content_text,
+      size: r.size,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+    };
+  }
+
+  async deleteDocument(id: string): Promise<{ ok: boolean }> {
+    this.ensureSchema();
+    this.sql`DELETE FROM local_documents WHERE id = ${id}`;
+    return { ok: true };
+  }
+
+  // Naive ranking: count how many query terms appear in title / tags / content.
+  // Returns matching documents with a content snippet around the first hit.
+  async searchDocuments(input: {
+    query: string;
+    limit?: number;
+  }): Promise<DocumentSearchHit[]> {
+    this.ensureSchema();
+    const query = input.query.trim();
+    if (!query) return [];
+    const limit = Math.max(1, Math.min(50, input.limit ?? 8));
+    const terms = Array.from(
+      new Set(
+        query
+          .toLowerCase()
+          .split(/\s+/)
+          .filter((t) => t.length > 1)
+      )
+    );
+    if (terms.length === 0) terms.push(query.toLowerCase());
+
+    // Pull recent docs and rank in memory. The MVP keeps this O(n); upgrade to
+    // FTS5 / vector search when corpora grow.
+    const rows = this.sql<{
+      id: string;
+      title: string;
+      mime_type: string;
+      tags_json: string;
+      content_text: string;
+      size: number;
+      updated_at: string;
+    }>`SELECT id, title, mime_type, tags_json, content_text, size, updated_at
+       FROM local_documents
+       ORDER BY updated_at DESC
+       LIMIT 500`;
+    const scored = rows
+      .map((r) => {
+        const hayTitle = r.title.toLowerCase();
+        const hayBody = `${r.tags_json}\n${r.content_text}`.toLowerCase();
+        let score = 0;
+        for (const t of terms) {
+          if (hayTitle.includes(t)) score += 2;
+          if (hayBody.includes(t)) score += 1;
+        }
+        return { row: r, score };
+      })
+      .filter((s) => s.score > 0);
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, limit).map(({ row: r }) => ({
+      id: r.id,
+      title: r.title,
+      mimeType: r.mime_type,
+      tags: safeStringArray(r.tags_json),
+      size: r.size,
+      updatedAt: r.updated_at,
+      snippet: makeSnippet(r.content_text, terms),
+    }));
+  }
+
   async findHandler(
     method: string,
     path: string
@@ -403,6 +590,26 @@ export type LocalFileMeta = {
   size: number;
   createdAt: string;
   updatedAt: string;
+};
+
+export type LocalDocumentMeta = {
+  id: string;
+  title: string;
+  mimeType: string;
+  tags: string[];
+  size: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type DocumentSearchHit = {
+  id: string;
+  title: string;
+  mimeType: string;
+  tags: string[];
+  size: number;
+  updatedAt: string;
+  snippet: string;
 };
 
 export type LocalHandler = {
@@ -473,6 +680,28 @@ function guessContentType(path: string): string {
   if (lower.endsWith(".png")) return "image/png";
   if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
   return "text/plain; charset=utf-8";
+}
+
+function safeStringArray(text: string): string[] {
+  try {
+    const v = JSON.parse(text);
+    return Array.isArray(v) ? v.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
+function makeSnippet(content: string, terms: string[]): string {
+  const lower = content.toLowerCase();
+  let firstHit = -1;
+  for (const t of terms) {
+    const idx = lower.indexOf(t);
+    if (idx >= 0 && (firstHit < 0 || idx < firstHit)) firstHit = idx;
+  }
+  const start = Math.max(0, (firstHit < 0 ? 0 : firstHit) - 80);
+  const end = Math.min(content.length, start + 320);
+  const slice = content.slice(start, end).replace(/\s+/g, " ");
+  return (start > 0 ? "…" : "") + slice + (end < content.length ? "…" : "");
 }
 
 function safeJSON(text: string): Record<string, unknown> {

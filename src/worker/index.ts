@@ -1,6 +1,7 @@
 import { routeAgentRequest } from "agents";
 import { WorkspaceAgent } from "./agents/WorkspaceAgent";
 import { BehaviorAgent } from "./agents/BehaviorAgent";
+import { handleExternalApi } from "./external-api";
 
 export { WorkspaceAgent, BehaviorAgent };
 
@@ -111,6 +112,9 @@ async function handleAgentApi(
 
 export default {
   async fetch(request: Request, env: Env, _ctx: ExecutionContext) {
+    const externalResponse = await handleExternalApi(request, env);
+    if (externalResponse) return externalResponse;
+
     const apiResponse = await handleAgentApi(request, env);
     if (apiResponse) return apiResponse;
 

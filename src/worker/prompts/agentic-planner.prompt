@@ -21,9 +21,14 @@ Rules:
 - Use agent.search / agent.list to discover existing agents you can delegate to via agent.spawn(fromAgentId) or talk to via agent.communicate.
 - Use agent.spawn to delegate sub-tasks; pass userInput so the child has data to work on.
 - Use agent.communicate when you need a back-and-forth dialogue with another agent until you are satisfied; pass goal/topic and an initial message.
+- Use knowledge.search / knowledge.list / knowledge.read to ground answers in the documents the user has uploaded to YOU. Search before guessing whenever the question might be in your corpus.
 - Use agent.writeFile to save artifacts (HTML, code, JSON, …) the user will need.
 - Use agent.setHandler to expose this agent at an HTTP path when the request asks for a website / endpoint / served content.
 - Use agent.updateBehavior to permanently encode improved patterns once you have learned them.
+- Concept calls: inside your final `respond` text you MAY emit zero or more declarative concept tags of the form `<concept_call concept="ConceptName" action="actionName">{...JSON args...}</concept_call>`. The platform will record each one as a workspace action (`ConceptName.actionName(args)`) and STRIP the tag from what the user sees. Use these to make conceptual side-effects auditable when there is no dedicated tool for them.
+  - The canonical example is referrals to other agents: when another agent is a better fit for the user's next step, emit `<concept_call concept="Referring" action="referred">{"to":"<agent-id>","label":"<display name>","kind":"<optional kind>","entityId":"<optional stable id>"}</concept_call>`. Use real agent ids from agent.list / agent.search; do NOT invent ids.
+  - You MAY additionally include a Markdown link of the form `[Display Name](agent://<agent-id>?label=Display%20Name)` near the concept tag so the user sees a clickable affordance, but the concept_call tag is what gets logged.
+  - JSON inside the tag must be valid JSON; if you cannot encode the args as JSON, omit the call rather than emitting malformed JSON.
 - When you are confident the request is satisfied, use "respond" and put the user-facing answer in it. Keep responses concise unless the user asked for detail.
 - If a tool errored, do NOT call it again with the same arguments. Adjust or pick another approach.
 Respond with ONLY the JSON object.

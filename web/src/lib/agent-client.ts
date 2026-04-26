@@ -111,6 +111,49 @@ export interface WorkspaceStub {
     updatedAt: string;
   }>;
   deleteAgentHandler(agentId: string, id: string): Promise<{ ok: boolean }>;
+
+  // Documents (uploaded knowledge corpus).
+  listAgentDocuments(agentId: string): Promise<
+    {
+      id: string;
+      title: string;
+      mimeType: string;
+      tags: string[];
+      size: number;
+      createdAt: string;
+      updatedAt: string;
+    }[]
+  >;
+  addAgentDocument(input: {
+    agentId: string;
+    id?: string;
+    title: string;
+    content: string;
+    mimeType?: string;
+    tags?: string[];
+  }): Promise<{
+    id: string;
+    title: string;
+    mimeType: string;
+    tags: string[];
+    size: number;
+    createdAt: string;
+    updatedAt: string;
+  }>;
+  deleteAgentDocument(agentId: string, id: string): Promise<{ ok: boolean }>;
+  getAgentDocument(
+    agentId: string,
+    id: string
+  ): Promise<{
+    id: string;
+    title: string;
+    mimeType: string;
+    tags: string[];
+    content: string;
+    size: number;
+    createdAt: string;
+    updatedAt: string;
+  } | null>;
 }
 
 export type WorkspaceAgentClient = ReturnType<typeof useAgent<WorkspaceState>> & {

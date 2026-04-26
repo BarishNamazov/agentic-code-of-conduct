@@ -540,6 +540,55 @@ export class WorkspaceAgent extends Agent<Env, WorkspaceState> {
     return child.deleteHandler(id);
   }
 
+  // ---------- Documents (uploaded knowledge) ----------
+
+  @callable()
+  async listAgentDocuments(agentId: string) {
+    const child = await this.requireBehaviorAgent(agentId);
+    return child.listDocuments();
+  }
+
+  @callable()
+  async addAgentDocument(input: {
+    agentId: string;
+    id?: string;
+    title: string;
+    content: string;
+    mimeType?: string;
+    tags?: string[];
+  }) {
+    const child = await this.requireBehaviorAgent(input.agentId);
+    return child.addDocument({
+      id: input.id,
+      title: input.title,
+      content: input.content,
+      mimeType: input.mimeType,
+      tags: input.tags,
+    });
+  }
+
+  @callable()
+  async deleteAgentDocument(agentId: string, id: string) {
+    const child = await this.requireBehaviorAgent(agentId);
+    return child.deleteDocument(id);
+  }
+
+  @callable()
+  async getAgentDocument(agentId: string, id: string) {
+    const child = await this.requireBehaviorAgent(agentId);
+    return child.getDocument(id);
+  }
+
+  @callable()
+  async searchAgentDocuments(input: {
+    agentId: string;
+    query: string;
+    limit?: number;
+  }) {
+    const child = await this.requireBehaviorAgent(input.agentId);
+    return child.searchDocuments({ query: input.query, limit: input.limit });
+  }
+
   // Internal: serve an HTTP request targeted at a specific agent. Called
   // from the worker fetch handler, not from the UI.
   async serveAgentRequest(input: {
@@ -819,6 +868,184 @@ export class WorkspaceAgent extends Agent<Env, WorkspaceState> {
     stream.end({ type: "done", runId });
   }
 
+  // External SSE chat. Returns a ReadableStream of SSE-encoded bytes that the
+  // worker fetch handler can pipe straight back as the response body. Maps
+  // RunChunk -> the AgentEvent shape expected by `docs/external_platform.md`.
+  async runExternalChat(input: {
+    agentId: string;
+    userInput: string;
+  }): Promise<ReadableStream<Uint8Array>> {
+    const encoder = new TextEncoder();
+    const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+    const writer = writable.getWriter();
+
+    const sendEvent = (type: string, data: unknown) => {
+      const payload = `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
+      writer.write(encoder.encode(payload)).catch(() => {
+        /* downstream closed */
+      });
+    };
+
+    const runId = `run_${crypto.randomUUID().slice(0, 8)}`;
+    const turnId = runId;
+    const agent = this.findAgent(input.agentId);
+
+    const toolStartedAt = new Map<string, number>();
+
+    const sink: RunSink = {
+      send(chunk: RunChunk) {
+        switch (chunk.type) {
+          case "token":
+            if (chunk.toolCallId) {
+              // Streaming tool token (e.g. llm.generate). Surface as
+              // input_json_delta so the consumer can render tool progress.
+              sendEvent("input_json_delta", {
+                toolUseId: chunk.toolCallId,
+                partialJson: chunk.text,
+              });
+            } else {
+              sendEvent("text_delta", { delta: chunk.text });
+            }
+            break;
+          case "tool":
+            toolStartedAt.set(chunk.toolCallId, Date.now());
+            sendEvent("tool_use_start", {
+              toolUseId: chunk.toolCallId,
+              name: chunk.tool,
+            });
+            sendEvent("input_json_delta", {
+              toolUseId: chunk.toolCallId,
+              partialJson: JSON.stringify(chunk.input ?? null),
+            });
+            break;
+          case "tool_result": {
+            const startedAt = toolStartedAt.get(chunk.toolCallId);
+            const durationMs =
+              startedAt != null ? Math.max(0, Date.now() - startedAt) : 0;
+            sendEvent("tool_result", {
+              toolUseId: chunk.toolCallId,
+              status: chunk.status === "completed" ? "ok" : "error",
+              result: chunk.output ?? chunk.error ?? null,
+              durationMs,
+            });
+            break;
+          }
+          case "error":
+            sendEvent("error", { message: chunk.message });
+            break;
+          // event / spawn / graph / done are workspace-internal — skip.
+          default:
+            break;
+        }
+      },
+    };
+
+    const startedAt = new Date().toISOString();
+    if (!agent) {
+      sendEvent("turn_start", { turnId });
+      sendEvent("error", { message: `Unknown agent ${input.agentId}` });
+      sendEvent("turn_end", { turnId });
+      sendEvent("done", {});
+      writer.close().catch(() => {});
+      return readable;
+    }
+
+    this.sql`
+      INSERT INTO run_sessions (id, root_agent_id, status, input_text, started_at)
+      VALUES (${runId}, ${input.agentId}, 'running', ${input.userInput}, ${startedAt})
+    `;
+    sendEvent("turn_start", { turnId });
+    sendEvent("conversation_state", {
+      conversationId: runId,
+      agentId: input.agentId,
+    });
+
+    const work = (async () => {
+      try {
+        await this.runBehavior({
+          runId,
+          agentId: input.agentId,
+          userInput: input.userInput,
+          sink,
+          causedByActionId: null,
+        });
+        this.sql`
+          UPDATE run_sessions SET status = 'completed',
+            completed_at = ${new Date().toISOString()} WHERE id = ${runId}
+        `;
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        sendEvent("error", { message });
+        this.sql`
+          UPDATE run_sessions SET status = 'failed',
+            completed_at = ${new Date().toISOString()} WHERE id = ${runId}
+        `;
+      } finally {
+        sendEvent("turn_end", { turnId });
+        sendEvent("done", {});
+        await this.refreshWorkspaceState().catch(() => {});
+        try {
+          await writer.close();
+        } catch {
+          /* downstream closed */
+        }
+      }
+    })();
+    // Keep DO alive until the run finishes even if the caller stops awaiting.
+    this.ctx.waitUntil(work);
+    return readable;
+  }
+
+  // External listing — mirrors `AgentSummary` from the integration doc.
+  async describeAgentsForExternal(query?: string): Promise<ExternalAgentSummary[]> {
+    const like = query ? `%${query.replace(/[%_]/g, "")}%` : null;
+    const rows = like
+      ? this.sql<AgentDescribeRow>`
+          SELECT a.id, a.name, a.kind, a.status, a.updated_at,
+            json_extract(bv.normalized_json, '$.agent.purpose') AS purpose,
+            bv.raw_text
+          FROM agents a
+          LEFT JOIN behavior_versions bv ON bv.id = a.current_behavior_version_id
+          WHERE a.kind = 'top_level'
+            AND (a.name LIKE ${like}
+                 OR COALESCE(json_extract(bv.normalized_json, '$.agent.purpose'), '') LIKE ${like}
+                 OR COALESCE(bv.raw_text, '') LIKE ${like})
+          ORDER BY a.updated_at DESC
+        `
+      : this.sql<AgentDescribeRow>`
+          SELECT a.id, a.name, a.kind, a.status, a.updated_at,
+            json_extract(bv.normalized_json, '$.agent.purpose') AS purpose,
+            bv.raw_text
+          FROM agents a
+          LEFT JOIN behavior_versions bv ON bv.id = a.current_behavior_version_id
+          WHERE a.kind = 'top_level'
+          ORDER BY a.updated_at DESC
+        `;
+    return rows.map((r) => toExternalAgentSummary(r));
+  }
+
+  async describeAgentForExternal(
+    agentId: string
+  ): Promise<ExternalAgentDetail | null> {
+    const rows = this.sql<AgentDescribeRow>`
+      SELECT a.id, a.name, a.kind, a.status, a.updated_at,
+        json_extract(bv.normalized_json, '$.agent.purpose') AS purpose,
+        bv.raw_text
+      FROM agents a
+      LEFT JOIN behavior_versions bv ON bv.id = a.current_behavior_version_id
+      WHERE a.id = ${agentId}
+      LIMIT 1
+    `;
+    const r = rows[0];
+    if (!r) return null;
+    const summary = toExternalAgentSummary(r);
+    return {
+      ...summary,
+      purpose: r.purpose ?? null,
+      behaviorSummary: (r.raw_text ?? "").slice(0, 1200),
+    };
+  }
+
   // ---------- Internal orchestration ----------
 
   private async runBehavior(opts: {
@@ -909,6 +1136,18 @@ export class WorkspaceAgent extends Agent<Env, WorkspaceState> {
         listAgentHandlers: async ({ actorAgentId }) => {
           const child = await ws.requireBehaviorAgent(actorAgentId);
           return child.listHandlers();
+        },
+        searchAgentDocuments: async ({ actorAgentId, query, limit }) => {
+          const child = await ws.requireBehaviorAgent(actorAgentId);
+          return child.searchDocuments({ query, limit });
+        },
+        listAgentDocuments: async ({ actorAgentId }) => {
+          const child = await ws.requireBehaviorAgent(actorAgentId);
+          return child.listDocuments();
+        },
+        readAgentDocument: async ({ actorAgentId, id }) => {
+          const child = await ws.requireBehaviorAgent(actorAgentId);
+          return child.getDocument(id);
         },
         listAgents: async () => {
           return ws
@@ -1466,6 +1705,48 @@ type ActionLogRow = {
   created_at: string;
 };
 
+type AgentDescribeRow = {
+  id: string;
+  name: string;
+  kind: string;
+  status: string;
+  updated_at: string;
+  purpose: string | null;
+  raw_text: string | null;
+};
+
+export type ExternalAgentSummary = {
+  id: string;
+  displayName: string;
+  description?: string;
+  status: "available" | "busy" | "offline";
+  updatedAt: string;
+};
+
+export type ExternalAgentDetail = ExternalAgentSummary & {
+  purpose: string | null;
+  behaviorSummary: string;
+};
+
+function toExternalAgentSummary(r: AgentDescribeRow): ExternalAgentSummary {
+  const status: ExternalAgentSummary["status"] =
+    r.status === "active"
+      ? "available"
+      : r.status === "paused"
+        ? "offline"
+        : r.status === "archived"
+          ? "offline"
+          : "available";
+  const description = r.purpose?.trim() || r.raw_text?.slice(0, 240) || undefined;
+  return {
+    id: r.id,
+    displayName: r.name,
+    description,
+    status,
+    updatedAt: r.updated_at,
+  };
+}
+
 function rowToTimeline(r: ActionLogRow): TimelineEvent {
   return {
     id: r.id,
@@ -1526,13 +1807,16 @@ function buildAssistantFromRun(
   tools: ChatToolRecord[],
   spawned: ChatAssistantRecord["spawned"]
 ): ChatAssistantRecord {
+  // Prefer the cleaned Communicating.sent event text (concept_call tags
+  // stripped) over the raw llm.generate output (which contains the full
+  // planner JSON envelope and any concept_call tags).
   const rootText =
+    communicatingSentText(events, rootAgentId) ??
     firstStringOutput(
       tools.filter(
         (t) => t.actorAgentId === rootAgentId && t.tool === "llm.generate"
       )
     ) ??
-    communicatingSentText(events, rootAgentId) ??
     "";
   const subThreadMap = new Map<string, ChatAssistantRecord["subThreads"][number]>();
   for (const tool of tools) {
@@ -1603,3 +1887,4 @@ function jsonResp(
     body: JSON.stringify(body),
   };
 }
+

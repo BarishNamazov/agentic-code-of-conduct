@@ -25,6 +25,9 @@ const AGENTIC_TOOLS = [
   "llm.generate",
   "memory.search",
   "http.fetch",
+  "knowledge.list",
+  "knowledge.search",
+  "knowledge.read",
   "agent.list",
   "agent.search",
   "agent.getBehavior",
@@ -149,6 +152,27 @@ export async function executeBuilding(
   if (finalRespond == null) {
     finalRespond = "I ran out of agentic steps without producing a complete answer.";
   }
+
+  // Extract any <concept_call concept="X" action="Y">{json}</concept_call>
+  // tags the model emitted in its final answer. Each one becomes a recorded
+  // workspace action; the tags are stripped from what the user sees.
+  const { cleanedText, conceptCalls } = extractConceptCalls(finalRespond);
+  for (const call of conceptCalls) {
+    await record(
+      hooks,
+      {
+        by: ctx.agentId,
+        action: `${call.concept}.${call.action}`,
+        args: call.args,
+        behaviorVersionId: ctx.behaviorVersionId,
+        runId: ctx.runId,
+        causedByActionId: lastCausedBy,
+        causedByReactionId: reaction.id,
+      },
+      sink
+    );
+  }
+  finalRespond = cleanedText;
 
   // Stream the final response as a normal token (no toolCallId) so the chat
   // UI accumulates it into the turn text.
@@ -291,4 +315,56 @@ function parsePlannerResponse(raw: string): PlannerDecision | null {
   } catch {
     return null;
   }
+}
+
+// Pull out <concept_call concept="X" action="Y">{json}</concept_call> blocks
+// the model embedded in its final answer and return both the parsed calls
+// (so the run loop can record() them) and the assistant text with the tags
+// stripped (so the user does not see them).
+type ParsedConceptCall = {
+  concept: string;
+  action: string;
+  args: Record<string, unknown>;
+};
+
+export function extractConceptCalls(text: string): {
+  cleanedText: string;
+  conceptCalls: ParsedConceptCall[];
+} {
+  if (!text) return { cleanedText: text, conceptCalls: [] };
+  // Be permissive about attribute order and whitespace; case-insensitive.
+  const re =
+    /<concept_call\b([^>]*)>([\s\S]*?)<\/concept_call>/gi;
+  const calls: ParsedConceptCall[] = [];
+  const cleaned = text.replace(re, (_match, attrs: string, inner: string) => {
+    const concept = attrValue(attrs, "concept");
+    const action = attrValue(attrs, "action");
+    if (!concept || !action) return ""; // malformed → drop quietly
+    const trimmed = inner.trim();
+    let args: Record<string, unknown> = {};
+    if (trimmed) {
+      try {
+        const parsed = JSON.parse(trimmed) as unknown;
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          args = parsed as Record<string, unknown>;
+        } else {
+          args = { value: parsed };
+        }
+      } catch {
+        args = { raw: trimmed };
+      }
+    }
+    calls.push({ concept, action, args });
+    return "";
+  });
+  // Collapse whitespace runs the stripped tags may have left behind.
+  const cleanedText = cleaned.replace(/\n{3,}/g, "\n\n").trim();
+  return { cleanedText, conceptCalls: calls };
+}
+
+function attrValue(attrs: string, name: string): string | null {
+  const re = new RegExp(`\\b${name}\\s*=\\s*("([^"]*)"|'([^']*)')`, "i");
+  const m = re.exec(attrs);
+  if (!m) return null;
+  return (m[2] ?? m[3] ?? "").trim() || null;
 }

@@ -9,9 +9,10 @@ import { ReviseDialog } from "../components/ReviseDialog";
 import {
   FilesPanel,
   HandlersPanel,
+  KnowledgePanel,
 } from "../components/AgentExtensionsPanel";
 
-type SideTab = "behavior" | "versions" | "children" | "runs" | "files" | "handlers";
+type SideTab = "behavior" | "versions" | "children" | "runs" | "files" | "handlers" | "knowledge";
 
 export function AgentDetailView({
   agentId,
@@ -193,6 +194,12 @@ export function AgentDetailView({
               >
                 Handlers
               </TabButton>
+              <TabButton
+                active={tab === "knowledge"}
+                onClick={() => setTab("knowledge")}
+              >
+                Knowledge
+              </TabButton>
             </div>
 
             <div className="max-h-[72vh] overflow-y-auto">
@@ -305,6 +312,10 @@ export function AgentDetailView({
 
               {tab === "handlers" && (
                 <HandlersPanel agentId={agentId} agent={agent} />
+              )}
+
+              {tab === "knowledge" && (
+                <KnowledgePanel agentId={agentId} agent={agent} />
               )}
             </div>
           </aside>

@@ -10,6 +10,9 @@ declare global {
     ASSETS?: { fetch: (req: Request) => Promise<Response> };
     WorkspaceAgent: DurableObjectNamespace<WorkspaceAgent>;
     BehaviorAgent: DurableObjectNamespace<BehaviorAgent>;
+    // Bearer token required for /api/v1/external/*. Set via `.dev.vars`
+    // locally or `wrangler secret put EXTERNAL_API_KEY` in production.
+    EXTERNAL_API_KEY?: string;
   }
 
   // Make Cloudflare's namespace alias resolve to our Env so the Agents SDK
