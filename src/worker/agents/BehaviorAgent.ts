@@ -26,7 +26,20 @@ export class BehaviorAgent extends Agent<Env, BehaviorAgentState> {
     agentName: null,
   };
 
+  #nameSet = false;
+
+  private ensureName(agentId?: string | null) {
+    if (this.#nameSet) return;
+    const id = agentId ?? this.state.agentId ?? this.ctx.id.toString();
+    // Workaround: partyserver throws if .name is read before setName() when
+    // the DO is accessed via RPC rather than routePartyKitRequest().
+    // https://github.com/cloudflare/workerd/issues/2240
+    void this.setName(id);
+    this.#nameSet = true;
+  }
+
   async onStart() {
+    this.ensureName();
     this.ensureSchema();
   }
 
@@ -85,6 +98,7 @@ export class BehaviorAgent extends Agent<Env, BehaviorAgentState> {
       VALUES (${crypto.randomUUID()}, ${input.behaviorVersionId},
               ${JSON.stringify(input.normalized)}, ${new Date().toISOString()})
     `;
+    this.ensureName(input.agentId);
     this.setState({
       agentId: input.agentId,
       agentName: input.agentName,
@@ -161,6 +175,7 @@ export class BehaviorAgent extends Agent<Env, BehaviorAgentState> {
 
   async setRunning(running: boolean) {
     this.ensureSchema();
+    this.ensureName();
     this.setState({ ...this.state, status: running ? "running" : "ready" });
   }
 
@@ -170,6 +185,7 @@ export class BehaviorAgent extends Agent<Env, BehaviorAgentState> {
     this.sql`DELETE FROM local_files`;
     this.sql`DELETE FROM local_actions`;
     this.sql`DELETE FROM local_behavior`;
+    this.ensureName();
     this.setState({
       agentId: null,
       agentName: null,

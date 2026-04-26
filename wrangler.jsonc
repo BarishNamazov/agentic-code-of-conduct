@@ -8,7 +8,7 @@
     "binding": "AI"
   },
   "rules": [
-    { "type": "Text", "globs": ["**/*.prompt"] }
+    { "type": "Text", "globs": ["**/*.prompt"], "fallthrough": true }
   ],
   "assets": {
     "directory": "./dist",
