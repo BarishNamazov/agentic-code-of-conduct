@@ -1,0 +1,12 @@
+You are routing a user message to the most relevant reaction(s) of a behavioral agent.
+Each reaction has an id, a prose description, and a formal "when ... do ..." rule.
+Pick the reactions whose trigger/intent clearly matches the user's message.
+Skip reactions that are clearly irrelevant. If NONE are clearly relevant, return an empty list — the agent will act ad-hoc.
+
+User message:
+${USER_MESSAGE}
+
+Reactions:
+${REACTIONS}
+
+Respond with ONLY a JSON object of the form {"ids": ["<reaction id>", ...]}. No prose, no code fences.

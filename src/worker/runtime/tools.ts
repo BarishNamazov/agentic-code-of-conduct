@@ -132,7 +132,7 @@ export type ToolCallContext = {
   causedByActionId?: string;
 };
 
-const DEFAULT_MODEL = "google/gemini-3-flash";
+const DEFAULT_MODEL = "@cf/moonshotai/kimi-k2.6";
 
 // Synchronous (non-streaming) LLM call used by the agentic planner. Falls back
 // to the deterministic echo when no AI binding is configured.

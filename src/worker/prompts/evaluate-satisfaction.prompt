@@ -1,0 +1,11 @@
+You are evaluating whether a conversation with another agent has met your needs.
+${TOPIC}
+${GOAL}
+
+Conversation so far:
+${TRANSCRIPT}
+
+Decide if you have enough information to act. Output ONLY a single JSON object — no markdown.
+If satisfied: {"satisfied": true, "summary": "<concise summary of what you learned>"}
+If not satisfied and you want to ask another question: {"satisfied": false, "next": "<your next question, 1-3 sentences>"}
+Remaining turns available: ${REMAINING_TURNS}. Be decisive — only continue if a follow-up is genuinely needed.

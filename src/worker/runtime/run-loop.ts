@@ -14,6 +14,8 @@ import type { ReactionIR, ThenActionIR } from "../../shared/types";
 import { selectEntryReactionsLLM } from "../behavior/validate";
 import { record } from "./action-log";
 import { composeWithUserInput, resolveArgs } from "./binding";
+import FULFILL_REACTION_PROMPT from "../prompts/fulfill-reaction.prompt";
+import { renderTemplate } from "../prompts/template";
 import { executeBuilding } from "./concepts/building";
 import { executeCommunicating } from "./concepts/communicating";
 import { executeSpawning } from "./concepts/spawning";
@@ -234,21 +236,19 @@ async function runFallbackLLM(
   const prompt =
     explicitPrompt !== null
       ? composeWithUserInput(explicitPrompt, userInput)
-      : [
-          userInput ? `User message / input:\n${userInput}\n` : "",
-          lastChild ? `Previous sub-agent output:\n${lastChild}\n` : "",
-          lastTool && lastTool !== userInput
+      : renderTemplate(FULFILL_REACTION_PROMPT, {
+          USER_INPUT: userInput ? `User message / input:\n${userInput}\n` : "",
+          CHILD_OUTPUT: lastChild ? `Previous sub-agent output:\n${lastChild}\n` : "",
+          TOOL_OUTPUT: lastTool && lastTool !== userInput
             ? `Previous tool output:\n${lastTool}\n`
             : "",
-          `You are an agent fulfilling the reaction: "${reaction.prose.trim()}".`,
-          `The reaction asks you to ${verbPart} (${conceptPart}). ` +
-            (Object.keys(args).length > 0
-              ? `Inputs: ${JSON.stringify(args)}.`
-              : ""),
-          `Perform that step now and respond directly to the user with the result. Do not narrate that you are an LLM — just produce the requested output.`,
-        ]
-          .filter(Boolean)
-          .join("\n");
+          REACTION_PROSE: reaction.prose.trim(),
+          VERB_PART: verbPart,
+          CONCEPT_PART: conceptPart,
+          INPUTS: Object.keys(args).length > 0
+            ? `Inputs: ${JSON.stringify(args)}.`
+            : "",
+        });
 
   await runTool(
     "llm.generate",

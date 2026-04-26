@@ -24,6 +24,9 @@
 import { record } from "../action-log";
 import { asString, summarize, truncate } from "../binding";
 import { generatePlannerText } from "../tools";
+import OPENING_MESSAGE_PROMPT from "../../prompts/opening-message.prompt";
+import EVALUATE_SATISFACTION_PROMPT from "../../prompts/evaluate-satisfaction.prompt";
+import { renderTemplate } from "../../prompts/template";
 import type {
   RunBinding,
   RunContext,
@@ -383,14 +386,12 @@ async function formulateOpeningMessage(
 ): Promise<string> {
   const seedTopic = topic || userInput;
   if (!seedTopic) return "";
-  const prompt = [
-    `You are agent "${nameForActor(ctx)}". You are about to start a conversation with another agent named "${recipient.name}".`,
-    topic ? `Topic / goal of the conversation: ${topic}` : "",
-    userInput ? `Underlying user request driving this conversation:\n${truncate(userInput, 1200)}` : "",
-    `Write a single concise opening message (2-4 sentences) that asks them what you need to know. Output the message text only — no preamble, no quotes.`,
-  ]
-    .filter(Boolean)
-    .join("\n");
+  const prompt = renderTemplate(OPENING_MESSAGE_PROMPT, {
+    AGENT_NAME: nameForActor(ctx),
+    RECIPIENT_NAME: recipient.name,
+    TOPIC: topic ? `Topic / goal of the conversation: ${topic}` : "",
+    USER_INPUT: userInput ? `Underlying user request driving this conversation:\n${truncate(userInput, 1200)}` : "",
+  });
   const { text, error } = await generatePlannerText(env, prompt);
   if (error) return seedTopic;
   return text.trim() || seedTopic;
@@ -411,18 +412,12 @@ async function evaluateSatisfaction(
       (t) => `Turn ${t.turn} — you asked: ${t.question}\nThey replied: ${t.reply}`
     )
     .join("\n\n");
-  const prompt = [
-    `You are evaluating whether a conversation with another agent has met your needs.`,
-    input.topic ? `Topic / goal: ${input.topic}` : "",
-    input.goal ? `Underlying user request: ${truncate(input.goal, 800)}` : "",
-    `\nConversation so far:\n${truncate(transcriptText, 4000)}`,
-    `\nDecide if you have enough information to act. Output ONLY a single JSON object — no markdown.`,
-    `If satisfied: {"satisfied": true, "summary": "<concise summary of what you learned>"}`,
-    `If not satisfied and you want to ask another question: {"satisfied": false, "next": "<your next question, 1-3 sentences>"}`,
-    `Remaining turns available: ${input.remainingTurns}. Be decisive — only continue if a follow-up is genuinely needed.`,
-  ]
-    .filter(Boolean)
-    .join("\n");
+  const prompt = renderTemplate(EVALUATE_SATISFACTION_PROMPT, {
+    TOPIC: input.topic ? `Topic / goal: ${input.topic}` : "",
+    GOAL: input.goal ? `Underlying user request: ${truncate(input.goal, 800)}` : "",
+    TRANSCRIPT: truncate(transcriptText, 4000),
+    REMAINING_TURNS: String(input.remainingTurns),
+  });
   const { text, error } = await generatePlannerText(env, prompt);
   if (error) return { satisfied: false, error };
   const parsed = parseSatisfactionJSON(text);

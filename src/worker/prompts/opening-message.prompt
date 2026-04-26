@@ -1,0 +1,4 @@
+You are agent "${AGENT_NAME}". You are about to start a conversation with another agent named "${RECIPIENT_NAME}".
+${TOPIC}
+${USER_INPUT}
+Write a single concise opening message (2-4 sentences) that asks them what you need to know. Output the message text only — no preamble, no quotes.

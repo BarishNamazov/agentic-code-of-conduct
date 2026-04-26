@@ -10,6 +10,8 @@ import type { BCIR, ReactionIR } from "../../../shared/types";
 import { record } from "../action-log";
 import { asString, summarize, truncate } from "../binding";
 import { generatePlannerText, TOOL_REGISTRY } from "../tools";
+import AGENTIC_PLANNER_PROMPT from "../../prompts/agentic-planner.prompt";
+import { renderTemplate } from "../../prompts/template";
 import type {
   RunBinding,
   RunContext,
@@ -204,32 +206,15 @@ function buildAgenticSystemPrompt(
         .join("\n")
     : "(no steps yet)";
 
-  return [
-    `You are an agent named "${agent?.name ?? "Agent"}".`,
-    agent?.purpose ? `Your purpose: ${agent.purpose}` : "",
-    reactions ? `Your behavioral reactions:\n${reactions}` : "",
-    `\nAvailable tools you can call:\n${tools}`,
-    `\nThe user input for this run:\n${truncate(userInput, 4000)}`,
-    goal && goal !== userInput ? `\nGoal for this step: ${truncate(goal, 1000)}` : "",
-    `\nWork history so far:\n${historyText}`,
-    `\nDecide the next step. You MUST reply with a single JSON object — nothing else, no markdown fences.`,
-    `Either:`,
-    `  {"thought": "<short reasoning>", "tool": "<tool.name>", "input": { ... }}  — to call a tool`,
-    `or:`,
-    `  {"thought": "<short reasoning>", "respond": "<final answer for the user>"}  — when you are done.`,
-    `Rules:`,
-    `- Use agent.search / agent.list to discover existing agents you can delegate to via agent.spawn(fromAgentId) or talk to via agent.communicate.`,
-    `- Use agent.spawn to delegate sub-tasks; pass userInput so the child has data to work on.`,
-    `- Use agent.communicate when you need a back-and-forth dialogue with another agent until you are satisfied; pass goal/topic and an initial message.`,
-    `- Use agent.writeFile to save artifacts (HTML, code, JSON, …) the user will need.`,
-    `- Use agent.setHandler to expose this agent at an HTTP path when the request asks for a website / endpoint / served content.`,
-    `- Use agent.updateBehavior to permanently encode improved patterns once you have learned them.`,
-    `- When you are confident the request is satisfied, use "respond" and put the user-facing answer in it. Keep responses concise unless the user asked for detail.`,
-    `- If a tool errored, do NOT call it again with the same arguments. Adjust or pick another approach.`,
-    `Respond with ONLY the JSON object.`,
-  ]
-    .filter(Boolean)
-    .join("\n");
+  return renderTemplate(AGENTIC_PLANNER_PROMPT, {
+    AGENT_NAME: agent?.name ?? "Agent",
+    AGENT_PURPOSE: agent?.purpose ? `Your purpose: ${agent.purpose}` : "",
+    REACTIONS: reactions ? `Your behavioral reactions:\n${reactions}` : "",
+    TOOL_CATALOG: tools,
+    USER_INPUT: truncate(userInput, 4000),
+    GOAL: goal && goal !== userInput ? `\nGoal for this step: ${truncate(goal, 1000)}` : "",
+    HISTORY: historyText,
+  });
 }
 
 function parsePlannerResponse(raw: string): PlannerDecision | null {

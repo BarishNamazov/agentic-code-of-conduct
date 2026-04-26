@@ -6,6 +6,8 @@ import type {
   ValidationResult,
 } from "../../shared/types";
 import { generatePlannerText, type ToolEnv } from "../runtime/tools";
+import ROUTE_REACTIONS_PROMPT from "../prompts/route-reactions.prompt";
+import { renderTemplate } from "../prompts/template";
 
 export function validateBehavior(bcir: BCIR): ValidationResult {
   const errors: CompilerWarning[] = [];
@@ -201,20 +203,10 @@ async function pickRelevantReactionIds(
     })
     .join("\n");
 
-  const prompt = [
-    `You are routing a user message to the most relevant reaction(s) of a behavioral agent.`,
-    `Each reaction has an id, a prose description, and a formal "when ... do ..." rule.`,
-    `Pick the reactions whose trigger/intent clearly matches the user's message.`,
-    `Skip reactions that are clearly irrelevant. If NONE are clearly relevant, return an empty list — the agent will act ad-hoc.`,
-    ``,
-    `User message:`,
-    userInput.slice(0, 2000),
-    ``,
-    `Reactions:`,
-    summary,
-    ``,
-    `Respond with ONLY a JSON object of the form {"ids": ["<reaction id>", ...]}. No prose, no code fences.`,
-  ].join("\n");
+  const prompt = renderTemplate(ROUTE_REACTIONS_PROMPT, {
+    USER_MESSAGE: userInput.slice(0, 2000),
+    REACTIONS: summary,
+  });
 
   const { text, error } = await generatePlannerText(env, prompt);
   if (error) return null;

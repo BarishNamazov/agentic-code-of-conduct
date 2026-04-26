@@ -7,6 +7,9 @@
   "ai": {
     "binding": "AI"
   },
+  "rules": [
+    { "type": "Text", "globs": ["**/*.prompt"] }
+  ],
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS",
