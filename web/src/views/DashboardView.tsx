@@ -34,7 +34,7 @@ export function DashboardView({
             Behaving Agents
           </h1>
           <p className="mt-2 max-w-2xl text-sm text-neutral-400">
-            Behavioural-code agents you have created. Every agent has stored,
+            Behavioral-code agents you have created. Every agent has stored,
             versioned behavior. Spawned children appear under their parent in
             the graph.
           </p>

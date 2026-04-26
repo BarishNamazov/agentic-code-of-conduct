@@ -115,11 +115,7 @@ function Field({
     <div className="flex gap-2 text-[11px]">
       <span className="w-20 shrink-0 text-neutral-500">{label}</span>
       <span
-        className={
-          mono
-            ? "mono min-w-0 truncate text-neutral-200"
-            : "min-w-0 truncate text-neutral-200"
-        }
+        className={`min-w-0 truncate text-neutral-200 ${mono ? "mono" : ""}`}
       >
         {value}
       </span>

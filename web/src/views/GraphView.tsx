@@ -383,6 +383,7 @@ function LegendItem({
 function Dot({ color }: { color: string }) {
   return (
     <span
+      aria-hidden
       className="inline-block h-2 w-2 rounded-full"
       style={{ background: color }}
     />

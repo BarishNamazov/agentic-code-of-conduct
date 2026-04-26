@@ -133,7 +133,7 @@ export function Sidebar({
             {theme === "dark" ? <MoonIcon /> : <SunIcon />}
             <span className="capitalize">{theme} mode</span>
           </span>
-          <span className="text-[10px] text-neutral-500">⇧</span>
+          <span className="text-[10px] text-neutral-500">tap to toggle</span>
         </button>
 
         <div className="px-1 text-[10px] text-neutral-600">
