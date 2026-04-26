@@ -17,6 +17,7 @@ export type RunSink = {
 // hosts can pass a stub.
 export type RuntimeEnv = {
   AI?: { run: (m: string, i: unknown, o?: unknown) => Promise<unknown> };
+  CEREBRAS_API_KEY?: string;
 };
 
 // The fixed-per-run context every concept handler receives.

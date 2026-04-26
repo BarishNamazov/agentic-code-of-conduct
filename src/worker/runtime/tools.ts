@@ -4,11 +4,11 @@
 // a `Tooling.called` request action and a `Tooling.completed` (or `Tooling.failed`)
 // attestation, both of which are recorded in the workspace action log.
 
-import { generateText, streamText } from "ai";
-import { createWorkersAI } from "workers-ai-provider";
+import { cerebrasGenerate } from "./cerebras";
 
 export type ToolEnv = {
   AI?: { run: (m: string, i: unknown, o?: unknown) => Promise<unknown> };
+  CEREBRAS_API_KEY?: string;
 };
 
 export type ToolStreamWriter = {
@@ -143,68 +143,38 @@ export type ToolCallContext = {
   causedByActionId?: string;
 };
 
-const DEFAULT_MODEL = "@cf/moonshotai/kimi-k2.6";
-
-// Synchronous (non-streaming) LLM call used by the agentic planner. Falls back
-// to the deterministic echo when no AI binding is configured.
 export async function generatePlannerText(
   env: ToolEnv,
-  prompt: string
+  prompt: string,
+  caller = "planner"
 ): Promise<{ text: string; error?: string }> {
-  if (!env.AI) {
-    return { text: `[no AI binding] ${prompt.slice(0, 800)}` };
+  if (!env.CEREBRAS_API_KEY) {
+    return { text: `[no CEREBRAS_API_KEY] ${prompt.slice(0, 800)}` };
   }
-  try {
-    const workersai = createWorkersAI({ binding: env.AI as never });
-    const { text } = await generateText({
-      model: workersai(DEFAULT_MODEL as never),
-      prompt,
-    });
-    return { text };
-  } catch (e) {
-    return { text: "", error: errorMessage(e) };
-  }
+  return cerebrasGenerate(env.CEREBRAS_API_KEY, prompt, caller);
 }
 
 const llmGenerate: ToolDefinition = {
   name: "llm.generate",
   description:
-    "Free-form text generation via the configured Workers AI binding (or echo fallback when AI is missing).",
+    "Free-form text generation via Cerebras (or echo fallback when API key is missing).",
   usage: `input: { "prompt": "Text to send to the model" }`,
   async run(env, input, ctx) {
     const prompt = String(input.prompt ?? input.input ?? "");
     if (!prompt) return { error: "Missing 'prompt'." };
-    if (!env.AI) {
-      const echoed = `[no AI binding] ${prompt.slice(0, 800)}`;
+    if (!env.CEREBRAS_API_KEY) {
+      const echoed = `[no CEREBRAS_API_KEY] ${prompt.slice(0, 800)}`;
       ctx.stream?.token(echoed);
       return { output: echoed };
     }
-    try {
-      const workersai = createWorkersAI({ binding: env.AI as never });
-      const result = streamText({
-        model: workersai(DEFAULT_MODEL as never),
-        prompt,
-      });
-      let acc = "";
-      for await (const chunk of result.textStream) {
-        acc += chunk;
-        ctx.stream?.token(chunk);
-      }
-      return { output: acc };
-    } catch (e) {
-      // Some Workers AI models don't support streaming; fall back to non-streaming.
-      try {
-        const workersai = createWorkersAI({ binding: env.AI as never });
-        const { text } = await generateText({
-          model: workersai(DEFAULT_MODEL as never),
-          prompt,
-        });
-        ctx.stream?.token(text);
-        return { output: text };
-      } catch (err) {
-        return { error: errorMessage(err) || errorMessage(e) };
-      }
-    }
+    const { text, error } = await cerebrasGenerate(
+      env.CEREBRAS_API_KEY,
+      prompt,
+      "llm.generate"
+    );
+    if (error) return { error };
+    ctx.stream?.token(text);
+    return { output: text };
   },
 };
 

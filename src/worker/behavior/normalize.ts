@@ -16,13 +16,10 @@ import type {
   ToolSpecIR,
 } from "../../shared/types";
 import { listAvailableTools } from "../runtime/tools";
-import { generateText } from "ai";
-import { createWorkersAI } from "workers-ai-provider";
+import { cerebrasGenerateWithSystem } from "../runtime/cerebras";
 import NORMALIZE_SYSTEM_PROMPT from "../prompts/normalize-behavior.prompt";
 import NORMALIZE_USER_PROMPT from "../prompts/normalize-behavior-user.prompt";
 import { renderTemplate } from "../prompts/template";
-
-const NORMALIZE_MODEL = "@cf/moonshotai/kimi-k2.6";
 
 function uid(prefix = "id"): string {
   return `${prefix}_${crypto.randomUUID().slice(0, 8)}`;
@@ -254,30 +251,42 @@ function mergeLLMResult(
 }
 
 async function parseWithLLM(
-  env: { AI?: Ai },
+  env: { CEREBRAS_API_KEY?: string },
   fallback: BCIR
 ): Promise<{ bcir: BCIR; warnings: CompilerWarning[] }> {
-  if (!env.AI) {
+  if (!env.CEREBRAS_API_KEY) {
     return {
       bcir: fallback,
       warnings: [
         {
           level: "warn",
           message:
-            "No AI binding present; using generic agentic-loop behavior.",
+            "No CEREBRAS_API_KEY present; using generic agentic-loop behavior.",
         },
       ],
     };
   }
 
   try {
-    const workersai = createWorkersAI({ binding: env.AI as never });
     const prompt = buildNormalizePrompt(fallback.raw.text, fallback);
-    const { text } = await generateText({
-      model: workersai(NORMALIZE_MODEL as never),
-      system: NORMALIZE_SYSTEM_PROMPT,
+    const { text, error } = await cerebrasGenerateWithSystem(
+      env.CEREBRAS_API_KEY,
+      NORMALIZE_SYSTEM_PROMPT,
       prompt,
-    });
+      "normalize-behavior"
+    );
+
+    if (error) {
+      return {
+        bcir: fallback,
+        warnings: [
+          {
+            level: "warn",
+            message: `LLM normalization failed (${error}); using generic agentic-loop behavior.`,
+          },
+        ],
+      };
+    }
 
     const parsed = tryParseLLMResponse(text);
     if (!parsed) {
@@ -316,7 +325,7 @@ async function parseWithLLM(
 }
 
 export async function normalizeBehavior(
-  env: { AI?: Ai },
+  env: { CEREBRAS_API_KEY?: string },
   input: CompileBehaviorInput
 ): Promise<{ bcir: BCIR; warnings: CompilerWarning[] }> {
   const text = input.rawText;
@@ -390,8 +399,3 @@ function withDefaultCapabilities(bcir: BCIR): BCIR {
     permissions: Array.from(permissions.values()),
   };
 }
-
-// Cloudflare Workers AI binding type alias (loose).
-type Ai = {
-  run: (model: string, input: unknown, options?: unknown) => Promise<unknown>;
-};
