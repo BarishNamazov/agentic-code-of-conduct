@@ -821,7 +821,7 @@ export class WorkspaceAgent extends Agent<Env, WorkspaceState> {
     const sink: RunSink = {
       send(chunk: RunChunk) {
         try {
-          stream.send(chunk);
+          stream.send(sanitizeRunChunkForOutput(chunk));
         } catch {
           /* connection closed */
         }
@@ -880,7 +880,7 @@ export class WorkspaceAgent extends Agent<Env, WorkspaceState> {
     const writer = writable.getWriter();
 
     const sendEvent = (type: string, data: unknown) => {
-      const payload = `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
+      const payload = `event: ${type}\ndata: ${JSON.stringify(sanitizeForOutput(data))}\n\n`;
       writer.write(encoder.encode(payload)).catch(() => {
         /* downstream closed */
       });
@@ -1566,15 +1566,17 @@ export class WorkspaceAgent extends Agent<Env, WorkspaceState> {
       }));
       const chatTools: ChatToolRecord[] = tools.map((t) => {
         const output = t.output_json ? safeUnknown(t.output_json) : undefined;
+        const sanitizedInput = sanitizeForOutput(safeUnknown(t.input_json));
+        const sanitizedOutput = sanitizeForOutput(output);
         return {
           id: t.id,
           tool: t.tool_name,
-          input: safeUnknown(t.input_json),
-          output,
-          error: t.error_text ?? undefined,
+          input: sanitizedInput,
+          output: sanitizedOutput,
+          error: t.error_text ? stripConceptCallMarkup(t.error_text) : undefined,
           status: t.status as ChatToolRecord["status"],
           actorAgentId: t.actor_agent_id,
-          tokens: typeof output === "string" ? output : "",
+          tokens: typeof sanitizedOutput === "string" ? sanitizedOutput : "",
           startedAt: t.started_at ?? t.completed_at ?? r.started_at,
         };
       });
@@ -1821,7 +1823,9 @@ function buildAssistantFromRun(
   const subThreadMap = new Map<string, ChatAssistantRecord["subThreads"][number]>();
   for (const tool of tools) {
     if (tool.actorAgentId === rootAgentId || tool.tool !== "llm.generate") continue;
-    const text = typeof tool.output === "string" ? tool.output : tool.tokens;
+    const text = stripConceptCallMarkup(
+      typeof tool.output === "string" ? tool.output : tool.tokens
+    );
     if (!text) continue;
     const existing = subThreadMap.get(tool.actorAgentId);
     const spawnedName =
@@ -1854,8 +1858,10 @@ function buildAssistantFromRun(
 
 function firstStringOutput(tools: ChatToolRecord[]): string | null {
   for (const tool of tools) {
-    if (typeof tool.output === "string" && tool.output.trim()) return tool.output;
-    if (tool.tokens.trim()) return tool.tokens;
+    if (typeof tool.output === "string" && tool.output.trim()) {
+      return stripConceptCallMarkup(tool.output);
+    }
+    if (tool.tokens.trim()) return stripConceptCallMarkup(tool.tokens);
   }
   return null;
 }
@@ -1871,10 +1877,46 @@ function communicatingSentText(
       event.action === "Communicating.sent" &&
       typeof event.args.object === "string"
     ) {
-      return event.args.object;
+      return stripConceptCallMarkup(event.args.object);
     }
   }
   return null;
+}
+
+function sanitizeRunChunkForOutput(chunk: RunChunk): RunChunk {
+  switch (chunk.type) {
+    case "token":
+      return { ...chunk, text: stripConceptCallMarkup(chunk.text) };
+    case "tool":
+      return { ...chunk, input: sanitizeForOutput(chunk.input) };
+    case "tool_result":
+      return {
+        ...chunk,
+        output: sanitizeForOutput(chunk.output),
+        error: chunk.error ? stripConceptCallMarkup(chunk.error) : undefined,
+      };
+    case "error":
+      return { ...chunk, message: stripConceptCallMarkup(chunk.message) };
+    default:
+      return chunk;
+  }
+}
+
+function sanitizeForOutput(value: unknown): unknown {
+  if (typeof value === "string") return stripConceptCallMarkup(value);
+  if (Array.isArray(value)) return value.map(sanitizeForOutput);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, child]) => [key, sanitizeForOutput(child)])
+    );
+  }
+  return value;
+}
+
+function stripConceptCallMarkup(text: string): string {
+  return text
+    .replace(/<concept_call\b[^>]*>[\s\S]*?<\/concept_call>/gi, "")
+    .replace(/\n{3,}/g, "\n\n");
 }
 
 function safeLike(query: string): string {
@@ -1897,4 +1939,3 @@ function jsonResp(
     body: JSON.stringify(body),
   };
 }
-

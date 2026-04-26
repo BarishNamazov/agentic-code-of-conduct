@@ -332,11 +332,11 @@ for referring to other agents:
    </concept_call>
    ```
 
-   The planner loop strips these tags from the user-facing text and writes
-   one `Referring.referred(args...)` entry to the workspace action log per
-   tag. This works the same way for *all* runs (internal chat, external
-   chat, handler invocations) — the external API does no special parsing
-   of its own.
+   The planner loop strips these tags from user-facing text and writes one
+   `Referring.referred(args...)` entry to the workspace action log per tag.
+   Output streams also scrub `<concept_call>` blocks recursively before
+   sending internal chat chunks or external SSE JSON, so these tags remain
+   an internal recording mechanism only.
 
 2. An optional **clickable Markdown link** rendered alongside the tag, so
    the user has something to click:

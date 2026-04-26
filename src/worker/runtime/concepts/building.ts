@@ -42,7 +42,7 @@ const AGENTIC_TOOLS = [
   "agent.listHandlers",
 ];
 
-const MAX_AGENTIC_STEPS = 8;
+const MAX_AGENTIC_STEPS = 25;
 
 type PlannerStep = {
   tool?: string;

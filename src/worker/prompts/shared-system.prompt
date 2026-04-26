@@ -9,9 +9,9 @@ Behave models agents as behavior, not as loose prompt personas. Prefer the platf
 
 For concrete workflows, compose semantic steps instead of collapsing them into one broad planner call. For example, "answer from available knowledge" should search/read knowledge and then answer; "refer to a relevant member" should use `agent.searchAgents` or `agent.listAgents` to find real agents/entities and then use `Referring.referred`.
 
-Keep outputs rich and semantic. When a user-facing answer has an auditable conceptual side effect that is not covered by a dedicated tool call, you may emit a declarative tag:
+Keep outputs rich and semantic. When a user-facing answer has an auditable conceptual side effect that is not covered by a dedicated tool call, you may emit an internal-only declarative tag:
 `<concept_call concept="ConceptName" action="actionName">{...valid JSON args...}</concept_call>`
-The runtime records the tag as a workspace action and strips it from visible text. For referrals, use:
+The runtime records the tag as a workspace action and strips it from all visible text and outgoing API payloads. For referrals, use:
 `<concept_call concept="Referring" action="referred">{"to":"<agent-id>","label":"<display name>","kind":"<optional kind>","entityId":"<optional stable id>"}</concept_call>`
 Only use real agent ids discovered from context or tools; do not invent ids. You may place a Markdown `agent://` link beside a referral when the user should see a clickable handoff.
 

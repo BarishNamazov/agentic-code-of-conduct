@@ -433,9 +433,9 @@ function ActivityBarChart({ buckets }: { buckets: Bucket[] }) {
   if (total === 0) {
     return (
       <div className="flex h-32 items-end gap-1">
-        {buckets.map((b) => (
+        {buckets.map((b, i) => (
           <div
-            key={b.label}
+            key={`${b.label}-${i}`}
             className="flex-1 rounded-sm bg-neutral-800/40"
             style={{ height: "8%" }}
             title={`${b.label} · 0 events`}
@@ -450,12 +450,12 @@ function ActivityBarChart({ buckets }: { buckets: Bucket[] }) {
   return (
     <div>
       <div className="flex h-32 items-end gap-1">
-        {buckets.map((b) => {
+        {buckets.map((b, i) => {
           const h = (b.count / max) * 100;
           return (
             <div
-              key={b.label}
-              className="group relative flex-1 cursor-default"
+              key={`${b.label}-${i}`}
+              className="group relative flex h-full flex-1 cursor-default items-end"
               title={`${b.label} · ${b.count} event${b.count === 1 ? "" : "s"}`}
             >
               <div
