@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { AgentDetail, BCIR, RunChunk, WorkspaceState } from "@shared/types";
 import type { WorkspaceAgentClient } from "../lib/agent-client";
 import type { Route } from "../App";
+import { identityFor } from "../lib/theme";
 import { BCIRView } from "../components/BehaviorPreview";
 import { ChatPanel } from "../components/ChatPanel";
 import { ReviseDialog } from "../components/ReviseDialog";
@@ -80,25 +81,38 @@ export function AgentDetailView({
   }
 
   const childRows = detail.children;
+  const ident = identityFor(detail.agent.id);
 
   return (
     <div className="space-y-6">
       <header className="flex items-start justify-between gap-6">
-        <div className="min-w-0">
-          <div className="text-xs uppercase tracking-wider text-neutral-500">
-            Agent · {detail.agent.kind}
+        <div className="flex min-w-0 items-start gap-4">
+          <span
+            className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl text-sm font-semibold tracking-wide shadow-soft"
+            style={{
+              background: ident.bg,
+              color: ident.color,
+              border: `1px solid ${ident.border}`,
+            }}
+          >
+            {ident.initials}
+          </span>
+          <div className="min-w-0">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-emerald-300/80">
+              Agent · {detail.agent.kind.replace("_", " ")}
+            </div>
+            <h1 className="font-display mt-1 truncate text-2xl font-semibold tracking-tight">
+              {detail.agent.name}
+            </h1>
+            <div className="mono mt-1 text-[11px] text-neutral-500">
+              {detail.agent.id}
+            </div>
+            {detail.behavior.agent.purpose && (
+              <p className="mt-3 max-w-2xl text-sm text-neutral-300">
+                {detail.behavior.agent.purpose}
+              </p>
+            )}
           </div>
-          <h1 className="mt-1 truncate text-2xl font-semibold tracking-tight">
-            {detail.agent.name}
-          </h1>
-          <div className="mono mt-1 text-[11px] text-neutral-500">
-            {detail.agent.id}
-          </div>
-          {detail.behavior.agent.purpose && (
-            <p className="mt-3 max-w-2xl text-sm text-neutral-300">
-              {detail.behavior.agent.purpose}
-            </p>
-          )}
         </div>
         <div className="flex flex-col items-end gap-2">
           <span
@@ -116,7 +130,7 @@ export function AgentDetailView({
           </div>
           <button
             onClick={() => setRailOpen((v) => !v)}
-            className="text-[11px] text-neutral-500 hover:text-neutral-300"
+            className="text-[11px] text-neutral-500 hover:text-emerald-300"
           >
             {railOpen ? "Hide details ▸" : "◂ Show details"}
           </button>

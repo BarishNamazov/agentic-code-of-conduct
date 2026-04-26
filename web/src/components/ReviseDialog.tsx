@@ -49,11 +49,13 @@ export function ReviseDialog({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-      <div className="flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-lg border border-neutral-800 bg-neutral-950 shadow-2xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+      <div className="flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl border border-neutral-800 bg-neutral-950 shadow-2xl">
         <header className="flex items-center justify-between border-b border-neutral-800 px-5 py-3">
           <div>
-            <h3 className="text-sm font-semibold tracking-tight">Revise behavior</h3>
+            <h3 className="font-display text-sm font-semibold tracking-tight">
+              Revise behavior
+            </h3>
             <div className="text-[11px] text-neutral-500">
               The new version supersedes — never overwrites — the old one.
             </div>

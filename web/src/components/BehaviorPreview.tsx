@@ -59,10 +59,10 @@ export function BCIRView({ bcir }: { bcir: BCIR }) {
   return (
     <div className="card space-y-4">
       <header>
-        <div className="text-xs uppercase tracking-wider text-neutral-500">
+        <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-emerald-300/80">
           Normalized behavior
         </div>
-        <div className="mt-1 text-base font-semibold tracking-tight">
+        <div className="font-display mt-1 text-base font-semibold tracking-tight">
           {bcir.agent.name}
         </div>
         {bcir.agent.purpose && (
@@ -71,21 +71,23 @@ export function BCIRView({ bcir }: { bcir: BCIR }) {
       </header>
 
       <section>
-        <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-neutral-400">
+        <h4 className="mb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-neutral-400">
           Reactions ({bcir.reactions.length})
         </h4>
         <ul className="space-y-2">
           {bcir.reactions.map((r) => (
             <li
               key={r.id}
-              className="rounded-md border border-neutral-800 bg-neutral-950 p-3 text-xs"
+              className="rounded-lg border border-neutral-800/80 bg-neutral-950/60 p-3 text-xs transition hover:border-neutral-700"
             >
               <div className="flex items-center gap-2">
                 <span className="badge">{r.name}</span>
-                <span className="text-[10px] text-neutral-500">{r.id}</span>
+                <span className="mono text-[10px] text-neutral-500">{r.id}</span>
               </div>
-              <div className="mt-2 text-neutral-300">{r.prose}</div>
-              <div className="mono mt-2 text-[11px] text-emerald-300">
+              <div className="mt-2 leading-relaxed text-neutral-300">
+                {r.prose}
+              </div>
+              <div className="mono mt-2 rounded-md border border-emerald-500/20 bg-emerald-500/5 px-2 py-1 text-[11px] text-emerald-300">
                 {r.formal}
               </div>
             </li>
@@ -95,7 +97,7 @@ export function BCIRView({ bcir }: { bcir: BCIR }) {
 
       {bcir.tools.length > 0 && (
         <section>
-          <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-neutral-400">
+          <h4 className="mb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-neutral-400">
             Declared tools
           </h4>
           <ul className="flex flex-wrap gap-2">
@@ -114,7 +116,7 @@ export function BCIRView({ bcir }: { bcir: BCIR }) {
 
       {bcir.permissions.length > 0 && (
         <section>
-          <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-neutral-400">
+          <h4 className="mb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-neutral-400">
             Permissions
           </h4>
           <ul className="flex flex-wrap gap-2">

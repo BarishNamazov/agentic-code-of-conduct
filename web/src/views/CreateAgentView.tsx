@@ -66,10 +66,15 @@ export function CreateAgentView({
   return (
     <div className="space-y-8">
       <header>
-        <h1 className="text-2xl font-semibold tracking-tight">Create an agent</h1>
-        <p className="mt-1 text-sm text-neutral-400">
-          Paste a behavioral description (free-form prose, the behavioral DSL, or
-          BCIR JSON). The compiler will normalize it and show the structured
+        <div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-emerald-300/80">
+          Authoring
+        </div>
+        <h1 className="font-display mt-1 text-2xl font-semibold tracking-tight">
+          Create an agent
+        </h1>
+        <p className="mt-1 max-w-2xl text-sm text-neutral-400">
+          Paste a behavioral description (free-form prose, the behavioral DSL,
+          or BCIR JSON). The compiler will normalize it and show the structured
           behavior before you commit.
         </p>
       </header>

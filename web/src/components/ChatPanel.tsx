@@ -292,18 +292,21 @@ export function ChatPanel({
 
   if (!loaded) {
     return (
-      <section className="relative flex h-[72vh] min-h-[520px] items-center justify-center overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900/40 text-sm text-neutral-500">
+      <section className="relative flex h-[72vh] min-h-[520px] items-center justify-center overflow-hidden rounded-xl border border-neutral-800/80 bg-surface-raised/60 text-sm text-neutral-500 shadow-card backdrop-blur-sm">
         Loading chat history…
       </section>
     );
   }
 
   return (
-    <section className="relative flex h-[72vh] min-h-[520px] flex-col overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900/40">
-      <header className="flex items-center justify-between gap-2 border-b border-neutral-800 px-4 py-2.5">
+    <section className="relative flex h-[72vh] min-h-[520px] flex-col overflow-hidden rounded-xl border border-neutral-800/80 bg-surface-raised/60 shadow-card backdrop-blur-sm">
+      <header className="flex items-center justify-between gap-2 border-b border-neutral-800/80 bg-neutral-900/40 px-4 py-2.5">
         <div className="flex min-w-0 items-center gap-2">
-          <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-400" />
-          <h2 className="truncate text-sm font-semibold tracking-tight">
+          <span className="relative h-2.5 w-2.5 shrink-0">
+            <span className="absolute inset-0 animate-ping rounded-full bg-emerald-400/40" />
+            <span className="absolute inset-0 rounded-full bg-emerald-400" />
+          </span>
+          <h2 className="font-display truncate text-sm font-semibold tracking-tight">
             Chat with {rootAgent.name}
           </h2>
           <span className="badge shrink-0">
@@ -388,7 +391,7 @@ export function ChatPanel({
           )}
       </div>
 
-      <div className="border-t border-neutral-800 bg-neutral-950/40 px-4 py-3">
+      <div className="border-t border-neutral-800/80 bg-neutral-900/40 px-4 py-3">
         {pending.length > 0 && (
           <ul className="mb-2 flex flex-wrap gap-2">
             {pending.map((a) => (
@@ -521,11 +524,25 @@ function formatBytes(n: number): string {
 function EmptyState() {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 py-16 text-center text-sm text-neutral-500">
-      <div className="text-3xl">💬</div>
-      <div className="font-semibold text-neutral-300">Start the conversation</div>
+      <div className="relative flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-500/15 to-sky-500/10 ring-1 ring-emerald-500/30 shadow-glow">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+          <path
+            d="M21 12a8 8 0 1 1-3.4-6.5L21 4l-1 4.6"
+            stroke="currentColor"
+            className="text-emerald-300"
+            strokeWidth="1.6"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </div>
+      <div className="font-display font-semibold text-neutral-200">
+        Start the conversation
+      </div>
       <p className="max-w-sm">
         Anything you send fires the agent's behavior. Reactions, tool calls and
-        spawned sub-agents stream live below each reply — open the trace to inspect them.
+        spawned sub-agents stream live below each reply — open the trace to
+        inspect them.
       </p>
     </div>
   );
@@ -535,16 +552,10 @@ function TypingIndicator({ label }: { label: string }) {
   return (
     <div className="flex items-center gap-2 text-xs text-neutral-500">
       <span className="badge badge-active">{label}</span>
-      <span className="flex gap-1">
-        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
-        <span
-          className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400"
-          style={{ animationDelay: "120ms" }}
-        />
-        <span
-          className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400"
-          style={{ animationDelay: "240ms" }}
-        />
+      <span className="dot-pulse flex gap-1">
+        <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+        <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+        <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
       </span>
       <span>thinking…</span>
     </div>
@@ -604,7 +615,7 @@ function UserBubble({ user }: { user: ChatTurn["user"] }) {
           </ul>
         )}
         {text && (
-          <div className="rounded-2xl rounded-br-sm border border-emerald-500/30 bg-emerald-500/10 px-4 py-2.5 text-sm leading-relaxed text-emerald-50 whitespace-pre-wrap">
+          <div className="rounded-2xl rounded-br-sm border border-emerald-500/30 bg-gradient-to-br from-emerald-500/15 to-emerald-500/5 px-4 py-2.5 text-sm leading-relaxed text-emerald-50 whitespace-pre-wrap shadow-soft">
             {text}
           </div>
         )}
@@ -655,7 +666,7 @@ function AssistantBubble({
         </div>
 
         {visibleText || isStreaming ? (
-          <div className="rounded-2xl rounded-bl-sm border border-neutral-800 bg-neutral-900 px-4 py-3 text-sm leading-relaxed text-neutral-100 whitespace-pre-wrap">
+          <div className="rounded-2xl rounded-bl-sm border border-neutral-800/80 bg-neutral-900/80 px-4 py-3 text-sm leading-relaxed text-neutral-100 whitespace-pre-wrap shadow-soft">
             {visibleText}
             {isStreaming && <Caret />}
           </div>
