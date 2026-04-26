@@ -998,7 +998,7 @@ export class WorkspaceAgent extends Agent<Env, WorkspaceState> {
 
   // External listing — mirrors `AgentSummary` from the integration doc.
   async describeAgentsForExternal(query?: string): Promise<ExternalAgentSummary[]> {
-    const like = query ? `%${query.replace(/[%_]/g, "")}%` : null;
+    const like = query ? safeLike(query) : null;
     const rows = like
       ? this.sql<AgentDescribeRow>`
           SELECT a.id, a.name, a.kind, a.status, a.updated_at,
@@ -1096,7 +1096,7 @@ export class WorkspaceAgent extends Agent<Env, WorkspaceState> {
       },
       toolHost: {
         searchMemory: (q: string) => {
-          const like = `%${q.replace(/[%_]/g, "")}%`;
+          const like = safeLike(q);
           return ws.sql<{
             id: string;
             actor_agent_id: string;
@@ -1174,7 +1174,7 @@ export class WorkspaceAgent extends Agent<Env, WorkspaceState> {
             }));
         },
         searchAgents: async (query: string) => {
-          const like = `%${query.replace(/[%_]/g, "")}%`;
+          const like = safeLike(query);
           const rows = ws.sql<{
             id: string;
             name: string;
@@ -1875,6 +1875,16 @@ function communicatingSentText(
     }
   }
   return null;
+}
+
+function safeLike(query: string): string {
+  const words = query
+    .replace(/[%_]/g, "")
+    .split(/\s+/)
+    .filter((w) => w.length > 0)
+    .sort((a, b) => b.length - a.length);
+  const keyword = (words[0] ?? "").slice(0, 40);
+  return keyword ? `%${keyword}%` : "%";
 }
 
 function jsonResp(
