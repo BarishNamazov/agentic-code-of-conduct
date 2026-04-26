@@ -24,6 +24,7 @@ import {
   type RunHooks,
   type RunSink,
 } from "../runtime/run-loop";
+import { executeCommunicating } from "../runtime/concepts/communicating";
 import { listAvailableTools } from "../runtime/tools";
 
 const RECENT_EVENT_LIMIT = 50;
@@ -946,6 +947,55 @@ export class WorkspaceAgent extends Agent<Env, WorkspaceState> {
           const { bcir } = await normalizeBehavior(ws.env, { rawText: behaviorText });
           return ws.reviseBehavior({ agentId: actorAgentId, normalized: bcir });
         },
+        communicateAgent: async ({
+          actorAgentId,
+          recipient,
+          message,
+          topic,
+          runId,
+          causedByActionId,
+          sink,
+        }) => {
+          const actor = await ws.ensureBehaviorAgentInstalled(actorAgentId);
+          const installed = await actor.getBehavior();
+          if (!installed) {
+            throw new Error(`Actor agent ${actorAgentId} has no installed behavior.`);
+          }
+          // Forward live timeline events but suppress the final user-facing
+          // summary token — the agentic loop will decide what to say once the
+          // tool result returns.
+          const fallbackSink: RunSink = { send: () => {} };
+          const upstream = (sink ?? fallbackSink) as RunSink;
+          const forward: RunSink = {
+            send(chunk) {
+              if (chunk.type === "token") return;
+              upstream.send(chunk);
+            },
+          };
+          const outcome = await executeCommunicating(
+            { recipient, message, topic },
+            causedByActionId,
+            null,
+            {
+              agentId: actorAgentId,
+              bcir: installed.normalized,
+              behaviorVersionId: installed.behaviorVersionId,
+              runId,
+            },
+            ws.makeRunHooks(),
+            forward,
+            ws.env,
+            { input: "", runId },
+            { streamSummaryToSink: false }
+          );
+          return {
+            conversationId: outcome.conversationId,
+            satisfied: outcome.satisfied,
+            reason: outcome.reason,
+            summary: outcome.summary,
+            turnCount: outcome.turnCount,
+          };
+        },
       },
       insertToolCall: ({ id, runId, actorAgentId, toolName, requestActionId, inputJson }) => {
         ws.sql`
@@ -997,13 +1047,13 @@ export class WorkspaceAgent extends Agent<Env, WorkspaceState> {
         });
         return { childAgentId };
       },
-      runChild: async ({ childAgentId, userInput, runId, sink }) => {
+      runChild: async ({ childAgentId, userInput, runId, sink, causedByActionId }) => {
         await ws.runBehavior({
           runId,
           agentId: childAgentId,
           userInput,
           sink,
-          causedByActionId: null,
+          causedByActionId: causedByActionId ?? null,
         });
       },
       normalizeChildBehavior: async ({ name, rawText }) => {

@@ -87,6 +87,11 @@ const VERB_TO_CONCEPT: Record<string, string> = {
   send: "Communicating",
   message: "Communicating",
   email: "Communicating",
+  ask: "Communicating",
+  discuss: "Communicating",
+  converse: "Communicating",
+  talk: "Communicating",
+  consult: "Communicating",
   write: "Writing",
   generate: "Generating",
   fetch: "Fetching",
@@ -167,14 +172,9 @@ function actionFromVerb(verb: string, rest: string): {
 } {
   const v = verb.toLowerCase();
   const concept = VERB_TO_CONCEPT[v] ?? cap(v);
-  // Tooling and Spawning are always requests.
-  const posture: "request" | "attest" =
-    concept === "Tooling" ||
-    concept === "Spawning" ||
-    concept === "Communicating" ||
-    concept === "Fetching"
-      ? "request"
-      : "request";
+  // All verbs map to request posture today; attest comes from explicit
+  // past-tense action phrasing handled elsewhere.
+  const posture: "request" | "attest" = "request";
   // Try to extract an object/argument string
   let arg = rest
     .replace(/^[\s,:;-]+/, "")
@@ -442,9 +442,10 @@ Given the user's raw behavior text AND a draft BCIR produced by a deterministic 
 - \`Building.act\` with \`{ "goal": "..." }\` — delegates to the agentic loop (multi-step LLM planning with tools). Use for complex tasks.
 - \`Tooling.called\` with \`{ "tool": "toolName", ... }\` — calls a specific tool directly.
 - \`Spawning.spawn\` with \`{ "name": "...", "purpose": "...", "behavior": "...", "task": "..." }\` — spawns a child agent.
+- \`Communicating.converse\` with \`{ "with": "<agent id or name>", "topic": "...", "message": "..." }\` — start a multi-turn dialogue with another agent and loop until satisfied. Use when peer review or back-and-forth clarification is needed.
 - \`Communicating.send\` with \`{ "message": "..." }\` — sends a response to the user.
 
-Available tools: llm.generate, memory.search, http.fetch, agent.writeFile, agent.readFile, agent.listFiles, agent.deleteFile, agent.setHandler, agent.listHandlers, agent.list, agent.search, agent.getBehavior, agent.spawn, agent.updateBehavior.
+Available tools: llm.generate, memory.search, http.fetch, agent.writeFile, agent.readFile, agent.listFiles, agent.deleteFile, agent.setHandler, agent.listHandlers, agent.list, agent.search, agent.getBehavior, agent.spawn, agent.communicate, agent.updateBehavior.
 
 ## Triggers (when)
 

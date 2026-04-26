@@ -97,11 +97,35 @@ export type ToolHostQueries = {
     actorAgentId: string;
     behaviorText: string;
   }): Promise<{ behaviorVersionId: string }>;
+  // Initiate a multi-turn conversation with another agent on behalf of the
+  // actor. Returns once the initiator's planner reports satisfaction or the
+  // turn budget is exhausted. The sink lets timeline events broadcast live;
+  // the user-facing summary is suppressed (the agentic loop decides what to
+  // surface to the user).
+  communicateAgent?(input: {
+    actorAgentId: string;
+    recipient: string;
+    message?: string;
+    topic?: string;
+    runId: string;
+    causedByActionId: string;
+    sink?: { send(chunk: unknown): void };
+  }): Promise<{
+    conversationId: string;
+    satisfied: boolean;
+    reason: string;
+    summary: string;
+    turnCount: number;
+  }>;
 };
 
 // Tools may need to know which agent invoked them (for self-extension tools).
 export type ToolCallContext = {
   stream?: ToolStreamWriter;
+  // Live run sink. Concepts that drive sub-agent dialogue (e.g.
+  // agent.communicate) need this to broadcast timeline events. Kept optional
+  // so non-run tool calls (one-off) work without it.
+  sink?: { send(chunk: unknown): void };
   host: ToolHostQueries;
   actorAgentId?: string;
   runId?: string;
@@ -461,6 +485,51 @@ const agentUpdateBehavior: ToolDefinition = {
   },
 };
 
+const agentCommunicate: ToolDefinition = {
+  name: "agent.communicate",
+  description:
+    "Hold a multi-turn conversation with another agent until you (the initiator) are satisfied. " +
+    "Use this when you need a back-and-forth dialogue (clarification, debate, peer review) rather than " +
+    "delegating an entire task via agent.spawn. Returns the conversation summary, satisfaction, and turn count.",
+  usage:
+    `input: { "recipient": "<agent id or name>", "message": "your opening message", ` +
+    `"topic": "optional short goal/topic" }`,
+  async run(_env, input, ctx) {
+    if (!ctx.actorAgentId || !ctx.host.communicateAgent) {
+      return { error: "agent.communicate is unavailable in this context." };
+    }
+    if (!ctx.runId || !ctx.causedByActionId) {
+      return { error: "agent.communicate requires a run context." };
+    }
+    const recipient = String(
+      input.recipient ?? input.with ?? input.to ?? input.agent ?? input.agentId ?? ""
+    );
+    if (!recipient) return { error: "Missing 'recipient'." };
+    const message =
+      typeof input.message === "string"
+        ? input.message
+        : typeof input.question === "string"
+          ? input.question
+          : undefined;
+    const topic =
+      typeof input.topic === "string"
+        ? input.topic
+        : typeof input.goal === "string"
+          ? input.goal
+          : undefined;
+    const result = await ctx.host.communicateAgent({
+      actorAgentId: ctx.actorAgentId,
+      recipient,
+      message,
+      topic,
+      runId: ctx.runId,
+      causedByActionId: ctx.causedByActionId,
+      sink: ctx.sink,
+    });
+    return { output: result };
+  },
+};
+
 export const TOOL_REGISTRY: Record<string, ToolDefinition> = {
   [llmGenerate.name]: llmGenerate,
   [memorySearch.name]: memorySearch,
@@ -476,6 +545,7 @@ export const TOOL_REGISTRY: Record<string, ToolDefinition> = {
   [agentGetBehavior.name]: agentGetBehavior,
   [agentSpawn.name]: agentSpawn,
   [agentUpdateBehavior.name]: agentUpdateBehavior,
+  [agentCommunicate.name]: agentCommunicate,
 };
 
 export function listAvailableTools() {
